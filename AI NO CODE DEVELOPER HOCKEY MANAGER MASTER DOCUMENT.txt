@@ -1,0 +1,2644 @@
+﻿//INFORMATIE MET BETREKKING TOT HET PROJECT//
+
+Systeemspecificatie & Architectuur Blauwdruk
+1. Componenten & Technologische Stack (WHAT)Frontend (User Interface): Single Page Application (SPA) gebouwd in React + Tailwind CSS, gehost op Firebase Hosting.Realtime Database Layer: Firebase Firestore (NoSQL Document Store) voor live wedstrijd-updates, live standen en pre-calculated ($O(1)$) statistieken.Authentication: Firebase Authentication (E-mail/Wachtwoord & Google Provider).Master Storage & Administrative Back-up: Google Sheets, benaderd en beheerd via Google Apps Script (GAS).AI Engine: Google AI Studio (Gemini 1.5 Flash API), aangeroepen via een centrale backend-sleutel voor automatische wedstrijdverslagen, tactisch advies en speler-samenvattingen.Media Storage: Externe CDN / Cloudinary / Google Drive (Public URLs) voor spelerfoto's, teamlogo's en videolinks.2. Datamodel, Entity Identifiers & Sleutel-Structuur (WHAT & HOW)A. Immutable Entity Identifiers (Keiharde Unieke Sleutels)Entiteiten veranderen nooit van ID, ongeacht naamswijzigingen of verhuizingen.Spelers: PLR_001, PLR_002, ...Teams: TEAM_001, TEAM_002, ...Wedstrijden: MCH_2026_001, ...Divisies/Competities: DIV_001, ...Events: EVT_1001, ...B. Scheiding van Codes en UI Labels (HL7-Principe)Database Opslag: Uitsluitend onveranderlijke codes uit de centrale CONFIG (TRIP, HOOK, LW, C, GOAL, PENALTY).Frontend Weergave: De UI vertaalt de code naar de tekstweergave ("Tripping", "Left Wing") op basis van het CONFIG-bestand. Er worden nooit lange omschrijvingen in de database opgeslagen.C. Denormalisatie & Materialized Views (Preloaded $O(1)$ Document Keys)In plaats van live berekeningen uit te voeren bij het opvragen van schermen, worden gegevens vooraf berekend en opgeslagen onder vaste, unieke document-sleutels in Firestore:Divisie Standen: stand:[SEIZOEN]:[DIVISIE_ID]Inhoud: { "teams": [ { "teamId": "TEAM_001", "punten": 12, "gespeeld": 5, "goalsVoor": 20, "goalsTegen": 8 } ] }Team Statistieken: team:[SEIZOEN]:[TEAM_ID]:statsInhoud: { "winst": 4, "verlies": 1, "vorm": "WWVWW", "gemiddeldGoals": 4.0 }Speler Statistieken: stats:[SEIZOEN]:[TEAM_ID]:[SPELER_ID]Inhoud: { "gp": 5, "goals": 3, "assists": 2, "points": 5, "pim": 6 }Wedstrijd Opstelling (Roster): match:[WEDSTRIJD_ID]:rosterInhoud: { "rosterThuis": ["PLR_001", "PLR_004"], "rosterUit": ["PLR_010", "PLR_012"] }Wedstrijd Event Log (Append-only): match:[WEDSTRIJD_ID]:eventsInhoud: Array van alle individuele live-acties.3. Dataflows & Operationele Processen (HOW)A. Fase 1: Live Wedstrijdverloop (In-Game Execution)Vooraf: De coach/teammanager vinkt de aanwezige spelers aan. Dit slaat het document match:[WEDSTRIJD_ID]:roster op.Tijdens de wedstrijd: De scorekeeper voert gebeurtenissen in.Schrijf-actie: Elk event wordt direct toegevoegd aan de append-only array match:[WEDSTRIJD_ID]:events én update een lichtgewicht headersleutel (scoreThuis, scoreUit, periode, tijd).Isolatie: Tijdens de wedstrijd worden de algemene seizoensstanden, topscorerslijsten en teamstatistieken niet aangeraakt of bijgewerkt.B. Fase 2: Match Termination & Batch Aggregatie ("Sluit Wedstrijd")Zodra de wedstrijd is afgelopen, drukt de beheerder/scorekeeper op "Sluit Wedstrijd". Dit start een gecontroleerde batch-opdracht op de backend:Games Played (GP): De backend leest match:[WEDSTRIJD_ID]:roster uit en verhoogt GP = GP + 1 voor alle aanwezige speler-sleutels van dat specifieke seizoen.Statistieken Tellen: De backend leest match:[WEDSTRIJD_ID]:events uit, telt goals, assists en strafminuten op, en update de specifieke stats:[SEIZOEN]:[TEAM_ID]:[SPELER_ID] documenten van de betrokken spelers.Standen & Team Stats: De backend herrekent de stand en schrijft het document stand:[SEIZOEN]:[DIVISIE_ID] en de team:[SEIZOEN]:[TEAM_ID]:stats documenten opnieuw weg.Business Rules & Automatische Schorsingen:Controle op opstapeling van strafminuten (bijv. PIM > drempelwaarde) of 'Game Misconduct'.Indien van toepassing: kent de backend een schorsings-flag toe aan het spelersprofiel.Kent badges/milestones toe bij het bereiken van mijlpalen (bijv. 50 goals).Google Sheet Sync: De backend voegt de definitieve wedstrijd-rij toe aan het Google Sheets archief via Google Apps Script.C. Fase 3: Correcties met Terugwerkende Kracht (Cache Invalidation)Als een historische wedstrijd-gebeurtenis achteraf wordt gewijzigd door een beheerder:De admin past het ruwe event aan in match:[WEDSTRIJD_ID]:events.De admin triggert de backend-functie recalculateSeason([SEIZOEN]).De backend voert een gecontroleerde herberekening uit over de ruwe logs van dat seizoen en overschrijft alle betrokken $O(1)$ precalculated document-sleutels.De frontend leest direct de nieuwe data uit via de bestaande document-sleutels zonder zelf herberekeningen uit te voeren.D. Structuurwijzigingen & Seizoensgebonden RelatiesNaamswijziging Team/Sponsor: De unieke ID (TEAM_001) blijft gelijk. Alleen het master-profiel team:TEAM_001:profile krijgt een nieuw label huidigeNaam. Historische data blijft gekoppeld aan TEAM_001.Divisie Herstructurering / Transfers: Teams worden per seizoen gekoppeld aan een divisie (seizoen:2026:team:TEAM_001 -> DIV_001). Bij herstructurering verandert alleen de seizoenskoppeling voor het nieuwe seizoen; het archief van eerdere seizoenen blijft ongewijzigd.4. AI-Integratie (Gemini API) (WHAT & HOW)Architectuur: De frontend communiceert nooit rechtstreeks met de Gemini API. Alle verzoeken lopen via de backend (GAS of Cloud Functions) met één centrale, geheime API-sleutel.Automatische Wedstrijdverslagen:Trigger: Nadat een wedstrijd de status SLUIT_WEDSTRIJD krijgt.Proces: Backend stuurt het match:[WEDSTRIJD_ID]:events JSON-object naar Gemini. Gemini genereert een tekstueel verslag.Opslag: Het verslag wordt opgeslagen in Firestore onder match:[WEDSTRIJD_ID]:report. Gebruikers lezen de reeds gegenereerde tekst uit (1 AI-call voor alle gebruikers).Tactisch Advies & Spelerkaarten: Loopt via identieke '1-call-and-cache' methodiek op de backend.5. Strikte Randvoorwaarden, Regels & Limieten (MUST WATCH OUT FOR)A. Ontwikkel- & Data-DisciplineSingle Source of Truth: HTML/DOM-scraping is strikt verboden. Data leeft in React State / Firebase State. UI-componenten her-renderen uitsluitend op basis van gewijzigde state.Immutable Codes: Een code die eenmaal in gebruik is (TRIP, LW), mag nooit worden hernoemd in de database. Wijzigingen aan omschrijvingen gebeuren uitsluitend in het frontend CONFIG-bestand.Geen Inline Event Handlers: Alle interacties lopen via modulaire component-methodes en gecontroleerde state-updates.B. Technische & Infrastructurele LimietenGoogle Sheets Concurrentie (LockService):Regel: Bij élke schrijf-actie (appendRow / updateRow) naar Google Sheets via Google Apps Script moet LockService.getScriptLock() worden gebruikt.Instelling: lock.waitLock(10000) met een verplichte lock.releaseLock() in een finally-blok om blokkades bij gelijktijdige invoer te voorkomen.Geen Binaire Bestanden op Hosting/Database:Regel: Binaire bestanden (afbeeldingen, video's) mogen nooit worden geüpload naar Firebase Hosting of opgeslagen als base64 in Firestore.Oplossing: Gebruik uitsluitend externe URL-referenties (<img src="...">) naar Google Drive of Cloudinary.Google Apps Script Execution Limit:Limiet: Maximaal 6 minuten uitvoeringstijd per script-run.Vereiste: Batch-processen (zoals seizoen-herberekeningen) moeten efficiënt worden geschreven om binnen deze tijdsduur te blijven.E-mail Quota:Limiet: Maximaal 100 e-mails per dag via een gratis Gmail/GAS-account.Vereiste: Gebruik in-app notificaties en Firebase Auth voor systeem-mails; gebruik Gmail niet voor algemene nieuwsbrieven of massa-notificaties.Rate Limits voor Gemini AI API:Limiet: Maximaal 15 verzoeken per minuut en 1.500 verzoeken per dag in de gratis tier.Vereiste: Pas bij geautomatiseerde batch-verzoeken een vertraging (throttling/sleep) toe van minimaal 4 seconden tussen opeenvolgende AI-aanroepen.Firebase Firestore Spark Tier Guardrails:Limiet: Maximaal 50.000 reads en 20.000 writes per dag gratis.Vereiste: Het door ons gekozen 2-fasen model (live-log tijdens de wedstrijd, batch-aggregatie na afloop) garandeert dat een speelronde ruimschoots binnen deze marges blijft (< 1.000 writes en < 10.000 reads op een drukke wedstrijddag).
+
+6. UI/UX Design System & Visual Aesthetics (VISUALS & TAILWIND)
+A. Algemene Vormgeving & Lay-out Structuur
+Design Stijl: Ultra-clean, modern, lichtgewicht dashboard met een hoge datadichtheid ("Sports Analytics / Enterprise Dashboard").
+
+Canvas & Achtergrond: Een hele zachte, koele off-white achtergrond (bg-slate-50 / #F8FAFC). Hierdoor steken de content-kaarten er haarscherp en fris bovenaf.
+
+Spatiëring & Padding: Compacte, strakke padding (p-4 tot p-6). Geen verloren ruimte; focus op maximale informatie per scherm.
+
+B. Kleurenpalet (Tailwind Tokens & Hex)
+Canvas / App Background: bg-slate-50 (#F8FAFC)
+
+Cards & Containers: Pure White bg-white (#FFFFFF) met hele dunne, subtiele randen (border border-slate-200 / #E2E8F0). Subtle drop-shadow (shadow-sm).
+
+Primaire Tekst (Titels, Cijfers): Charcoal / Dark Navy text-slate-900 (#0F172A) voor maximaal contrast en leesbaarheid.
+
+Secundaire Tekst (Labels, Subtitels, Metadata): Muted Slate text-slate-500 (#64748b) in een kleiner/medium lettertype.
+
+Accent Kleur (Actief / Selecties): Royal Electric Blue (#2563EB / blue-600) voor actieve tabs, geselecteerde sorteerpillen (PTS ▼) en highlights.
+
+Status / Streak Accent (Groen): Bright Emerald / Mint Green (#16A34A / emerald-600) voor positieve meldingen, win-streaks (W0, W3) en actieve indicatoren.
+
+Subtiele Achtergronden (Badges & Actieve Tabs): Lichtblauwe of lichtgrijze pillen (bg-blue-50, bg-slate-100).
+
+C. Navigatie & Sidebar (Left Navigation)
+Vaste Linker Sidebar:
+
+Lichte achtergrond (bg-white of bg-slate-50), visueel gescheiden van de content door een dunne rechter-border (border-r border-slate-200).
+
+Bovenaan: Dubbel logo (Competitie + Club/Sponsor) strak uitgelijnd.
+
+Secties ingedeeld met inklapbare/gegroepeerde menu's (Dashboard, Competitie, Modules, Nieuws, Contact).
+
+Onderaan vastgepind: Gebruikers/Spelers Profielkaart (Pasfoto/Avatar, Naam, Teamnaam en Instellingen-icoontjes).
+
+Achtergrond Watermerk: Optioneel heel licht watermerk/logo verwerkt in de sidebar met lage opacity (~3-5%).
+
+D. Tabellen & Datagrids (Standen & Statistieken)
+High Density Tables: Compacte rijhoogtes (py-2.5 px-3) om veel data zonder scrollen op het scherm te tonen.
+
+Header Styling:
+
+Kleine, hoofdletter/uppercase headers (text-xs font-bold text-slate-500 tracking-wider).
+
+Duidelijke sorteer-indicatoren met kleine pijltjes (GP ⇅, PTS ▼).
+
+Team Branding Inline: Kleine, ronde team-logo's/badges (20x20px) direct links naast de teamnaam in de tabel.
+
+Kolom Highlight: De belangrijkste statistiek (bijv. PTS / Punten) heeft een vette typografie (font-bold text-blue-600 of text-slate-900).
+
+Tabel Scheiding: Geen zware zwarte lijnen, maar uitsluitend flinterdunne horizontale borders (divide-y divide-slate-100).
+
+E. Controls, Filters & Header
+Top Bar Controls:
+
+Hoofdtitel in groot, vet lettertype (text-2xl font-bold text-slate-900) met een zachte subtitel eronder.
+
+Rechtsboven strakke filter-controls: Seizoens-dropdown (2026/2027), Datum-navigator met pijltjes (Jul 17), en een afgeronde zoekbalk (Zoek een team...).
+
+Tab-Navigatie:
+
+Primaire boventabs (Standings, Playoffs, Playoff Format).
+
+Secundaire filter-pills daaronder (Wild Card, Conference, Division, League) waarbij de actieve optie een strakke zwarte of blauwe onderlijn/pill krijgt.
+
+Legenda & Info Voetnoten:
+
+Onderaan tabellen staan kleine, gekleurde informatie-pills (x Clinched Playoff, y Clinched Division) in een lichtgrijze voettekst-balk.
+
+//EINDE INFORMATIE MET BETREKKING TOT HET PROJECT//
+
+//ONDERSTAANDE DATABASE IS VOLLEDIG MAAR BEVAT INCORRECTE STRUCTUUR EN OPBOUW//
+//AI, GRAAG ONDERSTAANDE MODELLEN (MEERVOUD) GEBRUIKEN ALS UITGANGSPUNT EN ZO VOLLEDIG ALS MOGELIJK CONVERTEREN NAAR HET DATAMODEL ZOALS BESCHREVEN IN DE TEKST HIERBOVEN (ZIE 2. Datamodel, Entity Identifiers & Sleutel-Structuur)//
+
+Kolom 1	Tabel	Kolom	Type	Size	Nullable	PK	FK	Beschrijving
+1	Persons	id	UUID		FALSE	TRUE		Unique ID
+1	Persons	first_name	TEXT		FALSE	FALSE		First name
+1	Persons	middle_name	TEXT		TRUE	FALSE		Prefix / middle name
+1	Persons	last_name	TEXT		FALSE	FALSE		Surname
+1	Persons	preferred_name	TEXT		TRUE	FALSE		Call sign
+1	Persons	date_of_birth	DATE		TRUE	FALSE		Date of birth
+1	Persons	date_of_death	DATE		TRUE	FALSE		Date of death
+1	Persons	gender	ENUM		TRUE	FALSE		Gender
+1	Persons	nationality_id	UUID		TRUE	FALSE	Countries	Nationality
+1	Persons	place_of_birth_id	UUID		TRUE	FALSE	Places	Place of birth
+1	Persons	profile_photo_id	UUID		TRUE	FALSE	MediaFiles	Profile picture
+1	Persons	biography	TEXT		TRUE	FALSE		Biography
+1	Persons	is_active	BOOLEAN		FALSE	FALSE		Active in system
+1	Persons	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Persons	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Persons	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Users	id	UUID		FALSE	TRUE		Unique ID
+1	Users	person_id	UUID		TRUE	FALSE	Persons	Linked person
+1	Users	auth_user_id	UUID		FALSE	FALSE	auth.users	Supabase Auth user
+1	Users	username	TEXT		FALSE	FALSE		Unique username
+1	Users	email	TEXT		FALSE	FALSE		Login email address
+1	Users	role_id	UUID		FALSE	FALSE	Roles	Primary role
+1	Users	status	ENUM		FALSE	FALSE		Account status
+1	Users	last_login_at	TIMESTAMP		TRUE	FALSE		Last login
+1	Users	email_verified_at	TIMESTAMP		TRUE	FALSE		Email verified
+1	Users	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Users	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Users	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Organizations	id	UUID		FALSE	TRUE		Unique ID
+1	Organizations	organization_type_id	UUID		FALSE	FALSE	OrganizationTypes	Type of organization (club, federation, sponsor, brand, media, manufacturer, etc.)
+1	Organizations	parent_organization_id	UUID		TRUE	FALSE	Organizations	Parent organization
+1	Organizations	name	TEXT		FALSE	FALSE		Official name
+1	Organizations	short_name	TEXT		TRUE	FALSE		Abbreviation
+1	Organizations	legal_name	TEXT		TRUE	FALSE		Legal name
+1	Organizations	founded_date	DATE		TRUE	FALSE		Date of establishment
+1	Organizations	dissolved_date	DATE		TRUE	FALSE		Termination date
+1	Organizations	country_id	UUID		TRUE	FALSE	Countries	Land
+1	Organizations	region_id	UUID		TRUE	FALSE	Regions	Region/province
+1	Organizations	place_id	UUID		TRUE	FALSE	Places	Place
+1	Organizations	location_id	UUID		TRUE	FALSE	Locations	Main location
+1	Organizations	website	TEXT		TRUE	FALSE		Website
+1	Organizations	logo_media_id	UUID		TRUE	FALSE	MediaFiles	Logo
+1	Organizations	description	TEXT		TRUE	FALSE		Description
+1	Organizations	is_active	BOOLEAN		FALSE	FALSE		Active organization
+1	Organizations	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Organizations	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Organizations	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Competitions	id	UUID		FALSE	TRUE		Unique ID
+1	Competitions	organization_id	UUID		TRUE	FALSE	Organizations	Organization that manages the competition
+1	Competitions	competition_type_id	UUID		FALSE	FALSE	CompetitionTypes	Type of competition (league, tournament, cup, friendly, etc.)
+1	Competitions	name	TEXT		FALSE	FALSE		Name of competition
+1	Competitions	short_name	TEXT		TRUE	FALSE		Abbreviation
+1	Competitions	description	TEXT		TRUE	FALSE		Description
+1	Competitions	country_id	UUID		TRUE	FALSE	Countries	Country in which the competition is active
+1	Competitions	region_id	UUID		TRUE	FALSE	Regions	Region/province
+1	Competitions	level	INTEGER		TRUE	FALSE		Level within hockey structure
+1	Competitions	gender_type_id	UUID		TRUE	FALSE		Men, women, mixed
+1	Competitions	age_category_id	UUID		TRUE	FALSE		Seniors, U18, U16, etc.
+1	Competitions	competition_format	TEXT		TRUE	FALSE		Competition format
+1	Competitions	ruleset_id	UUID		TRUE	FALSE	CompetitionSettings	Used rules
+1	Competitions	website	TEXT		TRUE	FALSE		Website
+1	Competitions	logo_media_id	UUID		TRUE	FALSE	MediaFiles	Logo
+1	Competitions	founded_date	DATE		TRUE	FALSE		Competition start date
+1	Competitions	dissolved_date	DATE		TRUE	FALSE		Competition end date
+1	Competitions	is_active	BOOLEAN		FALSE	FALSE		Active competition
+1	Competitions	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Competitions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Competitions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	CompetitionSeasons	id	UUID		FALSE	TRUE		Unique ID
+1	CompetitionSeasons	competition_id	UUID		FALSE	FALSE	Competitions	Associated competition
+1	CompetitionSeasons	name	TEXT		FALSE	FALSE		Season name (e.g. 2026/27)
+1	CompetitionSeasons	season_year_start	INTEGER		FALSE	FALSE		Start year
+1	CompetitionSeasons	season_year_end	INTEGER		FALSE	FALSE		End of year
+1	CompetitionSeasons	status_id	UUID		FALSE	FALSE	SeasonStatuses	Season status
+1	CompetitionSeasons	start_date	DATE		TRUE	FALSE		Season start date
+1	CompetitionSeasons	end_date	DATE		TRUE	FALSE		Season end date
+1	CompetitionSeasons	registration_start_date	DATE		TRUE	FALSE		Open registration
+1	CompetitionSeasons	registration_end_date	DATE		TRUE	FALSE		Registration closes
+1	CompetitionSeasons	ruleset_id	UUID		TRUE	FALSE	CompetitionSettings	Rules for this season
+1	CompetitionSeasons	notes	TEXT		TRUE	FALSE		Comments
+1	CompetitionSeasons	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	CompetitionSeasons	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	CompetitionSeasons	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Teams	id	UUID		FALSE	TRUE		Unique ID
+1	Teams	organization_id	UUID		TRUE	FALSE	Organizations	Superior team (e.g. main team → youth team)
+1	Teams	parent_team_id	UUID		TRUE	FALSE	Teams	Team name
+1	Teams	name	TEXT		FALSE	FALSE		Type of team
+1	Teams	short_name	TEXT		TRUE	FALSE		Abbreviation
+1	Teams	team_type_id	UUID		FALSE	FALSE	TeamTypes	Team level
+1	Teams	gender_type_id	UUID		TRUE	FALSE	GenderTypes	Men, women, mixed
+1	Teams	age_category_id	UUID		TRUE	FALSE	AgeCategories	Seniors, U18, U16, etc.
+1	Teams	level	INTEGER		TRUE	FALSE		Home location
+1	Teams	home_location_id	UUID		TRUE	FALSE	Locations	Team logo
+1	Teams	logo_media_id	UUID		TRUE	FALSE	MediaFiles	Team end date
+1	Teams	founded_date	DATE		TRUE	FALSE		Date of establishment
+1	Teams	dissolved_date	DATE		TRUE	FALSE		Active team
+1	Teams	description	TEXT		TRUE	FALSE		Description
+1	Teams	is_active	BOOLEAN		FALSE	FALSE		Location type
+1	Teams	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Teams	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Teams	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Locations	id	UUID		FALSE	TRUE		Unique ID
+1	Locations	location_type_id	UUID		FALSE	FALSE	LocationTypes	Owner/manager
+1	Locations	organization_id	UUID		TRUE	FALSE	Organizations	Upper location
+1	Locations	parent_location_id	UUID		TRUE	FALSE	Locations	Location name
+1	Locations	name	TEXT		FALSE	FALSE		Street + house number
+1	Locations	address_line_1	TEXT		TRUE	FALSE		Postal code
+1	Locations	postal_code	TEXT		TRUE	FALSE		GPS latitude
+1	Locations	place_id	UUID		TRUE	FALSE	Places	Place
+1	Locations	country_id	UUID		TRUE	FALSE	Countries	Land
+1	Locations	latitude	DECIMAL		TRUE	FALSE		GPS longitude
+1	Locations	longitude	DECIMAL		TRUE	FALSE		Visitor capacity
+1	Locations	capacity	INTEGER		TRUE	FALSE		Ice rink type
+1	Locations	surface_type_id	UUID		TRUE	FALSE	ArenaSurfaceTypes	Country name
+1	Locations	description	TEXT		TRUE	FALSE		Description
+1	Locations	website	TEXT		TRUE	FALSE		Website
+1	Locations	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+1	Locations	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Locations	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Locations	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Countries	id	UUID		FALSE	TRUE		Unique ID
+1	Countries	name	TEXT		FALSE	FALSE		ISO 2-letter code
+1	Countries	iso_code_2	TEXT		FALSE	FALSE		ISO 3-letter code
+1	Countries	iso_code_3	TEXT		TRUE	FALSE		Currency code
+1	Countries	currency_code	TEXT		TRUE	FALSE	Currencies	Phone country code
+1	Countries	phone_code	TEXT		TRUE	FALSE		Flag image
+1	Countries	flag_media_id	UUID		TRUE	FALSE	MediaFiles	Country to which the region belongs
+1	Countries	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+1	Countries	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Countries	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Countries	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Regions	id	UUID		FALSE	TRUE		Unique ID
+1	Regions	country_id	UUID		FALSE	FALSE	Countries	Upstream region
+1	Regions	parent_region_id	UUID		TRUE	FALSE	Regions	Region name
+1	Regions	name	TEXT		FALSE	FALSE		Province, state, district, etc.
+1	Regions	region_type	TEXT		TRUE	FALSE		Regional code
+1	Regions	code	TEXT		TRUE	FALSE		Region in which the place is located
+1	Regions	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+1	Regions	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Regions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Regions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Places	id	UUID		FALSE	TRUE		Unique ID
+1	Places	region_id	UUID		TRUE	FALSE	Regions	Name of place
+1	Places	country_id	UUID		FALSE	FALSE	Countries	Land
+1	Places	name	TEXT		FALSE	FALSE		Postal code area
+1	Places	postal_code	TEXT		TRUE	FALSE		population
+1	Places	latitude	DECIMAL		TRUE	FALSE		GPS longitude
+1	Places	longitude	DECIMAL		TRUE	FALSE		Visitor capacity
+1	Places	population	INTEGER		TRUE	FALSE		City, village, municipality, etc.
+1	Places	place_type	TEXT		TRUE	FALSE		Organization to which the institution applies
+1	Places	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+1	Places	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Places	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Places	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Players	id	UUID		FALSE	TRUE		Unique ID
+1	Players	person_id	UUID		FALSE	FALSE	Persons	Linked person
+1	Players	player_role_id	UUID		TRUE	FALSE	PlayerRoles	Primary position
+1	Players	position_id	UUID		TRUE	FALSE	Positions	Second position
+1	Players	secondary_position_id	UUID		TRUE	FALSE	Positions	Shooting left/right
+1	Players	shoots	TEXT		TRUE	FALSE		Length
+1	Players	height_cm	INTEGER		TRUE	FALSE		Weight
+1	Players	weight_kg	DECIMAL		TRUE	FALSE		Preferred number
+1	Players	jersey_number	INTEGER		TRUE	FALSE		Active, retired, injured, etc.
+1	Players	player_status	TEXT		TRUE	FALSE		Country of birth
+1	Players	birth_country_id	UUID		TRUE	FALSE	Countries	Level of development
+1	Players	development_level	TEXT		TRUE	FALSE		Dominant hand
+1	Players	dominant_hand	TEXT		TRUE	FALSE		Player photo
+1	Players	profile_media_id	UUID		TRUE	FALSE	MediaFiles	Role within hockey
+1	Players	biography	TEXT		TRUE	FALSE		Biography
+1	Players	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Players	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Players	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+1	Games	id	UUID		FALSE	TRUE		Unique ID
+1	Games	competition_stage_id	UUID		FALSE	FALSE	CompetitionStages	Linked match schedule
+1	Games	schedule_id	UUID		TRUE	FALSE	Schedules	Match type
+1	Games	game_type_id	UUID		FALSE	FALSE	GameTypes	Match status
+1	Games	game_status_id	UUID		FALSE	FALSE	GameStatuses	Match number
+1	Games	game_number	TEXT		TRUE	FALSE		Play location
+1	Games	location_id	UUID		TRUE	FALSE	Locations	Scheduled start time
+1	Games	start_time	TIMESTAMP		TRUE	FALSE		Actual start time
+1	Games	actual_start_time	TIMESTAMP		TRUE	FALSE		End times
+1	Games	end_time	TIMESTAMP		TRUE	FALSE		Number of periods
+1	Games	period_count	INTEGER		TRUE	FALSE		Final score at home
+1	Games	home_score	INTEGER		TRUE	FALSE		Final score from
+1	Games	away_score	INTEGER		TRUE	FALSE		Extra time played
+1	Games	overtime_played	BOOLEAN		FALSE	FALSE		Played Shootout
+1	Games	shootout_played	BOOLEAN		FALSE	FALSE		Match
+1	Games	notes	TEXT		TRUE	FALSE		Comments
+1	Games	created_at	TIMESTAMP		FALSE	FALSE		Created
+1	Games	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+1	Games	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	GameParticipants	id	UUID		FALSE	TRUE		Unique ID
+2	GameParticipants	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	GameParticipants	team_id	UUID		TRUE	FALSE	Teams	Participant type
+2	GameParticipants	participant_type_id	UUID		FALSE	FALSE	GameParticipantTypes	Home / Away / Neutral
+2	GameParticipants	side	TEXT		TRUE	FALSE		Participant's score
+2	GameParticipants	score	INTEGER		TRUE	FALSE		Win, loss, draw, etc.
+2	GameParticipants	result_type_id	UUID		TRUE	FALSE	GameResultTypes	Overtime score
+2	GameParticipants	overtime_score	INTEGER		TRUE	FALSE		Score shootout
+2	GameParticipants	shootout_score	INTEGER		TRUE	FALSE		Points for the standings
+2	GameParticipants	ranking_points	DECIMAL		TRUE	FALSE		Official who is linked
+2	GameParticipants	notes	TEXT		TRUE	FALSE		Comments
+2	GameParticipants	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	GameParticipants	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	GameParticipants	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	GameOfficials	id	UUID		FALSE	TRUE		Unique ID
+2	GameOfficials	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	GameOfficials	official_id	UUID		FALSE	FALSE	Officials	Role during the match
+2	GameOfficials	official_role_id	UUID		FALSE	FALSE	OfficialRoles	Assigned, confirmed, withdrawn
+2	GameOfficials	assignment_status_id	UUID		FALSE	FALSE	AssignmentStatuses	Moment of assignment
+2	GameOfficials	assigned_at	TIMESTAMP		TRUE	FALSE		Moment of confirmation
+2	GameOfficials	confirmed_at	TIMESTAMP		TRUE	FALSE		Team for which the lineup applies
+2	GameOfficials	notes	TEXT		TRUE	FALSE		Comments
+2	GameOfficials	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	GameOfficials	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	GameOfficials	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	GameLineups	id	UUID		FALSE	TRUE		Unique ID
+2	GameLineups	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	GameLineups	team_id	UUID		FALSE	FALSE	Teams	Role in lineup
+2	GameLineups	player_id	UUID		FALSE	FALSE	Players	Season
+2	GameLineups	lineup_role_id	UUID		FALSE	FALSE	LineupRoles	Jersey number during the match
+2	GameLineups	jersey_number	INTEGER		TRUE	FALSE		Starting position
+2	GameLineups	starting_position	TEXT		TRUE	FALSE		Line number
+2	GameLineups	line_number	INTEGER		TRUE	FALSE		Shift group
+2	GameLineups	shift_group	TEXT		TRUE	FALSE		Captain
+2	GameLineups	captain	BOOLEAN		FALSE	FALSE		Assistant captain
+2	GameLineups	alternate_captain	BOOLEAN		FALSE	FALSE		Has actually played
+2	GameLineups	played	BOOLEAN		FALSE	FALSE		Period in which the event takes place
+2	GameLineups	notes	TEXT		TRUE	FALSE		Comments
+2	GameLineups	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	GameLineups	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	GameLineups	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	GameEvents	id	UUID		FALSE	TRUE		Unique ID
+2	GameEvents	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	GameEvents	period_number	INTEGER		TRUE	FALSE		Time in seconds from period start
+2	GameEvents	event_time	INTEGER		TRUE	FALSE		Event type
+2	GameEvents	event_type_id	UUID		FALSE	FALSE	EventTypes	Involved team
+2	GameEvents	team_id	UUID		TRUE	FALSE	Teams	Involved player
+2	GameEvents	player_id	UUID		TRUE	FALSE	Players	Second player involved
+2	GameEvents	secondary_player_id	UUID		TRUE	FALSE	Players	Involved goalie
+2	GameEvents	goalie_id	UUID		TRUE	FALSE	Players	Assist provider
+2	GameEvents	assist_player_id	UUID		TRUE	FALSE	Players	Linked event
+2	GameEvents	related_event_id	UUID		TRUE	FALSE	GameEvents	Additional location information on ice
+2	GameEvents	location_data	JSONB		TRUE	FALSE		Additional details depending on event type
+2	GameEvents	event_data	JSONB		TRUE	FALSE		Team for which the player played
+2	GameEvents	description	TEXT		TRUE	FALSE		Description
+2	GameEvents	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	GameEvents	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	GameEvents	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	PlayerGameStats	id	UUID		FALSE	TRUE		Unique ID
+2	PlayerGameStats	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	PlayerGameStats	player_id	UUID		FALSE	FALSE	Players	Season
+2	PlayerGameStats	team_id	UUID		FALSE	FALSE	Teams	Minutes played
+2	PlayerGameStats	minutes_played	INTEGER		TRUE	FALSE		Number of shifts
+2	PlayerGameStats	shifts	INTEGER		TRUE	FALSE		Goals
+2	PlayerGameStats	goals	INTEGER		TRUE	FALSE		Assists
+2	PlayerGameStats	assists	INTEGER		TRUE	FALSE		Points
+2	PlayerGameStats	points	INTEGER		TRUE	FALSE		Shots on goal
+2	PlayerGameStats	shots	INTEGER		TRUE	FALSE		Blocked shots
+2	PlayerGameStats	shots_blocked	INTEGER		TRUE	FALSE		Hits
+2	PlayerGameStats	hits	INTEGER		TRUE	FALSE		take Puck away
+2	PlayerGameStats	takeaways	INTEGER		TRUE	FALSE		Puck loss
+2	PlayerGameStats	giveaways	INTEGER		TRUE	FALSE		Faceoffs taken
+2	PlayerGameStats	faceoffs_taken	INTEGER		TRUE	FALSE		Won faceoffs
+2	PlayerGameStats	faceoffs_won	INTEGER		TRUE	FALSE		Penalty minutes
+2	PlayerGameStats	penalties_minutes	INTEGER		TRUE	FALSE		Plus/minus
+2	PlayerGameStats	plus_minus	INTEGER		TRUE	FALSE		Time on powerplay
+2	PlayerGameStats	powerplay_time	INTEGER		TRUE	FALSE		Time short-handed
+2	PlayerGameStats	shorthanded_time	INTEGER		TRUE	FALSE		Future statistics
+2	PlayerGameStats	advanced_stats	JSONB		TRUE	FALSE		Team
+2	PlayerGameStats	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	PlayerGameStats	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	PlayerGameStats	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	TeamGameStats	id	UUID		FALSE	TRUE		Unique ID
+2	TeamGameStats	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	TeamGameStats	team_id	UUID		FALSE	FALSE	Teams	Goals scored
+2	TeamGameStats	goals_for	INTEGER		TRUE	FALSE		Goals conceded
+2	TeamGameStats	goals_against	INTEGER		TRUE	FALSE		Opponent shots
+2	TeamGameStats	shots_for	INTEGER		TRUE	FALSE		Blocked shots
+2	TeamGameStats	shots_against	INTEGER		TRUE	FALSE		Number of powerplays
+2	TeamGameStats	powerplay_opportunities	INTEGER		TRUE	FALSE		Powerplay goals
+2	TeamGameStats	powerplay_goals	INTEGER		TRUE	FALSE		Number of penalty kills
+2	TeamGameStats	penalty_kill_opportunities	INTEGER		TRUE	FALSE		Successful kills
+2	TeamGameStats	penalty_kill_successes	INTEGER		TRUE	FALSE		Puck takeaway
+2	TeamGameStats	faceoffs_taken	INTEGER		TRUE	FALSE		Won faceoffs
+2	TeamGameStats	faceoffs_won	INTEGER		TRUE	FALSE		Penalty minutes
+2	TeamGameStats	hits	INTEGER		TRUE	FALSE		take Puck away
+2	TeamGameStats	blocks	INTEGER		TRUE	FALSE		Hits
+2	TeamGameStats	giveaways	INTEGER		TRUE	FALSE		Faceoffs taken
+2	TeamGameStats	takeaways	INTEGER		TRUE	FALSE		Puck possesses time
+2	TeamGameStats	penalty_minutes	INTEGER		TRUE	FALSE		Plus/minus
+2	TeamGameStats	possession_time	INTEGER		TRUE	FALSE		Additional statistics
+2	TeamGameStats	advanced_stats	JSONB		TRUE	FALSE		Goalie/player
+2	TeamGameStats	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	TeamGameStats	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	TeamGameStats	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	GoalieGameStats	id	UUID		FALSE	TRUE		Unique ID
+2	GoalieGameStats	game_id	UUID		FALSE	FALSE	Games	Participating team
+2	GoalieGameStats	goalie_id	UUID		FALSE	FALSE	Players	Team for which the goalie played
+2	GoalieGameStats	team_id	UUID		FALSE	FALSE	Teams	Shots against
+2	GoalieGameStats	minutes_played	INTEGER		TRUE	FALSE		Number of shifts
+2	GoalieGameStats	shots_against	INTEGER		TRUE	FALSE		Rescues
+2	GoalieGameStats	saves	INTEGER		TRUE	FALSE		Conceding goals
+2	GoalieGameStats	goals_against	INTEGER		TRUE	FALSE		Save percentage
+2	GoalieGameStats	save_percentage	DECIMAL		TRUE	FALSE		GAA
+2	GoalieGameStats	goals_against_average	DECIMAL		TRUE	FALSE		Shutout
+2	GoalieGameStats	shutout	BOOLEAN		FALSE	FALSE		Won match
+2	GoalieGameStats	wins	INTEGER		TRUE	FALSE		Lost match
+2	GoalieGameStats	losses	INTEGER		TRUE	FALSE		OT losses
+2	GoalieGameStats	overtime_losses	INTEGER		TRUE	FALSE		Shootout attempts against
+2	GoalieGameStats	shootout_attempts_against	INTEGER		TRUE	FALSE		Shootout saves
+2	GoalieGameStats	shootout_saves	INTEGER		TRUE	FALSE		Extra goalie statistics
+2	GoalieGameStats	advanced_stats	JSONB		TRUE	FALSE		Phase to which the schedule applies
+2	GoalieGameStats	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	GoalieGameStats	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	GoalieGameStats	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	Standings	id	UUID		FALSE	TRUE		Unique ID
+2	Standings	competition_stage_id	UUID		FALSE	FALSE	CompetitionStages	Division/pool/group
+2	Standings	league_group_id	UUID		TRUE	FALSE	LeagueGroups	Stand type
+2	Standings	standings_type_id	UUID		FALSE	FALSE	StandingsTypes	Calculation rules
+2	Standings	calculation_method	JSONB		TRUE	FALSE		Latest calculation
+2	Standings	last_calculated_at	TIMESTAMP		TRUE	FALSE		Associated stand
+2	Standings	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	Standings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	Standings	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+2	StandingRows	id	UUID		FALSE	TRUE		Unique ID
+2	StandingRows	standings_id	UUID		FALSE	FALSE	Standings	Team in standings
+2	StandingRows	team_id	UUID		FALSE	FALSE	Teams	Matches played
+2	StandingRows	games_played	INTEGER		FALSE	FALSE		Won matches
+2	StandingRows	wins	INTEGER		FALSE	FALSE		Lost matches
+2	StandingRows	losses	INTEGER		FALSE	FALSE		Overtime victories
+2	StandingRows	overtime_wins	INTEGER		TRUE	FALSE		Shootout victories
+2	StandingRows	overtime_losses	INTEGER		TRUE	FALSE		Shootout attempts against
+2	StandingRows	shootout_wins	INTEGER		TRUE	FALSE		Losing the shootout
+2	StandingRows	shootout_losses	INTEGER		TRUE	FALSE		Draws
+2	StandingRows	ties	INTEGER		TRUE	FALSE		For goals
+2	StandingRows	goals_for	INTEGER		FALSE	FALSE		Against goals
+2	StandingRows	goals_against	INTEGER		FALSE	FALSE		Goal difference
+2	StandingRows	goal_difference	INTEGER		TRUE	FALSE		Classification points
+2	StandingRows	points	DECIMAL		FALSE	FALSE		Position
+2	StandingRows	rank_position	INTEGER		TRUE	FALSE		Latest results
+2	StandingRows	form	JSONB		TRUE	FALSE		Player who moves
+2	StandingRows	advanced_stats	JSONB		TRUE	FALSE		Goalie/player
+2	StandingRows	created_at	TIMESTAMP		FALSE	FALSE		Created
+2	StandingRows	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+2	StandingRows	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	PlayerContracts	id	UUID		FALSE	TRUE		Unique ID
+3	PlayerContracts	player_id	UUID		FALSE	FALSE	Players	Organization concluding the contract
+3	PlayerContracts	organization_id	UUID		TRUE	FALSE	Organizations	Team for which the contract applies
+3	PlayerContracts	team_id	UUID		TRUE	FALSE	Teams	Type of contract
+3	PlayerContracts	contract_type_id	UUID		FALSE	FALSE	ContractTypes	Contract start date
+3	PlayerContracts	start_date	DATE		FALSE	FALSE		Contract end date
+3	PlayerContracts	end_date	DATE		TRUE	FALSE		Salary amount
+3	PlayerContracts	salary_amount	DECIMAL		TRUE	FALSE		Currency
+3	PlayerContracts	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+3	PlayerContracts	salary_period	TEXT		TRUE	FALSE		Bonuses and conditions
+3	PlayerContracts	bonus_structure	JSONB		TRUE	FALSE		No trade allowed
+3	PlayerContracts	no_trade_clause	BOOLEAN		FALSE	FALSE		Termination clause
+3	PlayerContracts	release_clause	BOOLEAN		FALSE	FALSE		Active, terminated, expired
+3	PlayerContracts	contract_status_id	UUID		FALSE	FALSE	ContractStatuses	Date of signing
+3	PlayerContracts	signed_date	DATE		TRUE	FALSE		Staff member with a contract
+3	PlayerContracts	notes	TEXT		TRUE	FALSE		Comments
+3	PlayerContracts	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	PlayerContracts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	PlayerContracts	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	StaffContracts	id	UUID		FALSE	TRUE		Unique ID
+3	StaffContracts	staff_id	UUID		FALSE	FALSE	Staff	Player
+3	StaffContracts	organization_id	UUID		TRUE	FALSE	Organizations	Team for which the contract applies
+3	StaffContracts	team_id	UUID		TRUE	FALSE	Teams	Type of contract
+3	StaffContracts	contract_type_id	UUID		FALSE	FALSE	ContractTypes	Contract start date
+3	StaffContracts	start_date	DATE		FALSE	FALSE		Contract end date
+3	StaffContracts	end_date	DATE		TRUE	FALSE		Salary amount
+3	StaffContracts	salary_amount	DECIMAL		TRUE	FALSE		Currency
+3	StaffContracts	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+3	StaffContracts	salary_period	TEXT		TRUE	FALSE		Bonuses and conditions
+3	StaffContracts	bonus_structure	JSONB		TRUE	FALSE		No trade allowed
+3	StaffContracts	contract_status_id	UUID		FALSE	FALSE	ContractStatuses	Date of signing
+3	StaffContracts	signed_date	DATE		TRUE	FALSE		Staff member with a contract
+3	StaffContracts	notes	TEXT		TRUE	FALSE		Comments
+3	StaffContracts	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	StaffContracts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	StaffContracts	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	PlayerRegistrations	id	UUID		FALSE	TRUE		Unique ID
+3	PlayerRegistrations	player_id	UUID		FALSE	FALSE	Players	Season
+3	PlayerRegistrations	competition_season_id	UUID		FALSE	FALSE	CompetitionSeasons	Competition
+3	PlayerRegistrations	competition_id	UUID		TRUE	FALSE	Competitions	Team for which the player is registered
+3	PlayerRegistrations	team_id	UUID		TRUE	FALSE	Teams	Specific division/pool
+3	PlayerRegistrations	league_group_id	UUID		TRUE	FALSE	LeagueGroups	Type of registration
+3	PlayerRegistrations	registration_type_id	UUID		FALSE	FALSE	RegistrationTypes	Registration status
+3	PlayerRegistrations	status_id	UUID		FALSE	FALSE	RegistrationStatuses	Registration start date
+3	PlayerRegistrations	start_date	DATE		TRUE	FALSE		Registration end date
+3	PlayerRegistrations	end_date	DATE		TRUE	FALSE		Jersey number
+3	PlayerRegistrations	jersey_number	INTEGER		TRUE	FALSE		Main registration
+3	PlayerRegistrations	is_primary	BOOLEAN		FALSE	FALSE		Competitive phase in which the match takes place
+3	PlayerRegistrations	notes	TEXT		TRUE	FALSE		Comments
+3	PlayerRegistrations	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	PlayerRegistrations	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	PlayerRegistrations	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	Transfers	id	UUID		FALSE	TRUE		Unique ID
+3	Transfers	player_id	UUID		FALSE	FALSE	Players	Departing organization
+3	Transfers	from_organization_id	UUID		TRUE	FALSE	Organizations	New organization
+3	Transfers	to_organization_id	UUID		TRUE	FALSE	Organizations	Departing team
+3	Transfers	from_team_id	UUID		TRUE	FALSE	Teams	New team
+3	Transfers	to_team_id	UUID		TRUE	FALSE	Teams	Transfer type
+3	Transfers	transfer_type_id	UUID		FALSE	FALSE	TransferTypes	Transfer date
+3	Transfers	transfer_date	DATE		FALSE	FALSE		Date on which transfer takes effect
+3	Transfers	effective_date	DATE		TRUE	FALSE		Transfer fee
+3	Transfers	transfer_fee	DECIMAL		TRUE	FALSE		Has a relationship with the contract
+3	Transfers	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+3	Transfers	contract_related	BOOLEAN		FALSE	FALSE		Applied for, approved, completed
+3	Transfers	status_id	UUID		FALSE	FALSE	TransferStatuses	Competition in which trade takes place
+3	Transfers	notes	TEXT		TRUE	FALSE		Comments
+3	Transfers	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	Transfers	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	Transfers	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	Trades	id	UUID		FALSE	TRUE		Unique ID
+3	Trades	competition_id	UUID		TRUE	FALSE	Competitions	Organization that gives away assets
+3	Trades	from_organization_id	UUID		FALSE	FALSE	Organizations	Organization receiving assets
+3	Trades	to_organization_id	UUID		FALSE	FALSE	Organizations	Date trade
+3	Trades	trade_date	DATE		FALSE	FALSE		Trade type
+3	Trades	trade_type_id	UUID		FALSE	FALSE	TradeTypes	Status
+3	Trades	status_id	UUID		FALSE	FALSE	TradeStatuses	Approver
+3	Trades	approved_by	UUID		TRUE	FALSE	Users	Related trade
+3	Trades	notes	TEXT		TRUE	FALSE		Comments
+3	Trades	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	Trades	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	Trades	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	TradeAssets	id	UUID		FALSE	TRUE		Unique ID
+3	TradeAssets	trade_id	UUID		FALSE	FALSE	Trades	Giving / receiving
+3	TradeAssets	direction	TEXT		FALSE	FALSE		Asset type
+3	TradeAssets	asset_type_id	UUID		FALSE	FALSE	AssetTypes	Player as an asset
+3	TradeAssets	player_id	UUID		TRUE	FALSE	Players	Draft selection as an asset
+3	TradeAssets	draft_pick_id	UUID		TRUE	FALSE	DraftPicks	Organizational rights
+3	TradeAssets	organization_id	UUID		TRUE	FALSE	Organizations	Monetary value
+3	TradeAssets	value_amount	DECIMAL		TRUE	FALSE		Loaned player
+3	TradeAssets	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+3	TradeAssets	asset_data	JSONB		TRUE	FALSE		Additional information
+3	TradeAssets	notes	TEXT		TRUE	FALSE		Comments
+3	TradeAssets	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	TradeAssets	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	TradeAssets	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	Loans	id	UUID		FALSE	TRUE		Unique ID
+3	Loans	player_id	UUID		FALSE	FALSE	Players	Owner player
+3	Loans	from_organization_id	UUID		TRUE	FALSE	Organizations	Temporary organization
+3	Loans	to_organization_id	UUID		TRUE	FALSE	Organizations	Original team
+3	Loans	from_team_id	UUID		TRUE	FALSE	Teams	Temporary team
+3	Loans	to_team_id	UUID		TRUE	FALSE	Teams	Start of loan period
+3	Loans	start_date	DATE		FALSE	FALSE		End of loan period
+3	Loans	end_date	DATE		TRUE	FALSE		Type of loan
+3	Loans	loan_type_id	UUID		FALSE	FALSE	LoanTypes	Who pays salary/expenses
+3	Loans	salary_responsibility	JSONB		TRUE	FALSE		Recall option
+3	Loans	recall_allowed	BOOLEAN		FALSE	FALSE		Player on waivers
+3	Loans	status_id	UUID		FALSE	FALSE	LoanStatuses	Date of signing
+3	Loans	notes	TEXT		TRUE	FALSE		Comments
+3	Loans	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	Loans	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	Loans	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	Waivers	id	UUID		FALSE	TRUE		Unique ID
+3	Waivers	player_id	UUID		FALSE	FALSE	Players	Organization that places player
+3	Waivers	organization_id	UUID		FALSE	FALSE	Organizations	Type waiver
+3	Waivers	waiver_type_id	UUID		FALSE	FALSE	WaiverTypes	Date posted
+3	Waivers	submitted_date	DATE		FALSE	FALSE		Waiver end date
+3	Waivers	expiry_date	DATE		TRUE	FALSE		Organization claiming the player
+3	Waivers	claimed_by_organization_id	UUID		TRUE	FALSE	Organizations	Claim order
+3	Waivers	claim_priority_order	INTEGER		TRUE	FALSE		Active, claimed, expired
+3	Waivers	status_id	UUID		FALSE	FALSE	WaiverStatuses	Reason for posting
+3	Waivers	reason	TEXT		TRUE	FALSE		Player available on market
+3	Waivers	notes	TEXT		TRUE	FALSE		Comments
+3	Waivers	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	Waivers	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	Waivers	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	FreeAgency	id	UUID		FALSE	TRUE		Unique ID
+3	FreeAgency	player_id	UUID		FALSE	FALSE	Players	Competition in which a free agent is active
+3	FreeAgency	competition_id	UUID		TRUE	FALSE	Competitions	Previous organization
+3	FreeAgency	previous_organization_id	UUID		TRUE	FALSE	Organizations	Type free agency
+3	FreeAgency	free_agency_type_id	UUID		FALSE	FALSE	FreeAgencyTypes	Start availability
+3	FreeAgency	start_date	DATE		FALSE	FALSE		End of availability
+3	FreeAgency	end_date	DATE		TRUE	FALSE		Requested fee
+3	FreeAgency	asking_salary	DECIMAL		TRUE	FALSE		Desired role/team
+3	FreeAgency	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+3	FreeAgency	preferred_role	JSONB		TRUE	FALSE		Available, signed, expired
+3	FreeAgency	status_id	UUID		FALSE	FALSE	FreeAgencyStatuses	Competition in which the draft takes place
+3	FreeAgency	signed_by_organization_id	UUID		TRUE	FALSE	Organizations	Departing team
+3	FreeAgency	notes	TEXT		TRUE	FALSE		Comments
+3	FreeAgency	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	FreeAgency	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	FreeAgency	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	Drafts	id	UUID		FALSE	TRUE		Unique ID
+3	Drafts	competition_id	UUID		TRUE	FALSE	Competitions	Type draft
+3	Drafts	season_id	UUID		FALSE	FALSE	CompetitionSeasons	Competition
+3	Drafts	draft_type_id	UUID		FALSE	FALSE	DraftTypes	Draft name
+3	Drafts	name	TEXT		FALSE	FALSE		Draft date
+3	Drafts	draft_date	DATE		TRUE	FALSE		Number of rounds
+3	Drafts	rounds_count	INTEGER		TRUE	FALSE		How the order is determined
+3	Drafts	order_method_id	UUID		TRUE	FALSE	DraftOrderMethods	Planned, active, completed
+3	Drafts	status_id	UUID		FALSE	FALSE	DraftStatuses	Draft rules
+3	Drafts	rules	JSONB		TRUE	FALSE		Accompanying draft
+3	Drafts	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	Drafts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	Drafts	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	DraftRounds	id	UUID		FALSE	TRUE		Unique ID
+3	DraftRounds	draft_id	UUID		FALSE	FALSE	Drafts	Round number
+3	DraftRounds	round_number	INTEGER		FALSE	FALSE		Round name
+3	DraftRounds	name	TEXT		TRUE	FALSE		Number of choices in round
+3	DraftRounds	pick_count	INTEGER		TRUE	FALSE		Specific lap rules
+3	DraftRounds	order_number	INTEGER		TRUE	FALSE		Regional location
+3	DraftRounds	rules	JSONB		TRUE	FALSE		Round in which pick falls
+3	DraftRounds	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	DraftRounds	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	DraftRounds	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+3	DraftPicks	id	UUID		FALSE	TRUE		Unique ID
+3	DraftPicks	draft_round_id	UUID		FALSE	FALSE	DraftRounds	General picking order
+3	DraftPicks	pick_number	INTEGER		FALSE	FALSE		Original owner pick
+3	DraftPicks	original_organization_id	UUID		TRUE	FALSE	Organizations	Current owner pick
+3	DraftPicks	current_organization_id	UUID		TRUE	FALSE	Organizations	Selected player
+3	DraftPicks	selected_player_id	UUID		TRUE	FALSE	Players	Available, used, transferred
+3	DraftPicks	selection_status_id	UUID		FALSE	FALSE	DraftSelectionStatuses	Trade through which pick is obtained
+3	DraftPicks	acquired_through_trade_id	UUID		TRUE	FALSE	Trades	Date selection
+3	DraftPicks	selection_date	DATE		TRUE	FALSE		Person with injury
+3	DraftPicks	notes	TEXT		TRUE	FALSE		Comments
+3	DraftPicks	created_at	TIMESTAMP		FALSE	FALSE		Created
+3	DraftPicks	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+3	DraftPicks	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	EntityRelationships	id	UUID		FALSE	TRUE		Unique ID
+4	EntityRelationships	relationship_type_id	UUID		FALSE	FALSE	RelationshipTypes	Type of relationship
+4	EntityRelationships	source_entity_type	TEXT		FALSE	FALSE		Type of source entity
+4	EntityRelationships	source_entity_id	UUID		FALSE	FALSE		Source entity ID
+4	EntityRelationships	target_entity_type	TEXT		FALSE	FALSE		Target entity type
+4	EntityRelationships	target_entity_id	UUID		FALSE	FALSE		Target entity ID
+4	EntityRelationships	start_date	DATE		TRUE	FALSE		Start relationship
+4	EntityRelationships	end_date	DATE		TRUE	FALSE		End of relationship
+4	EntityRelationships	status_id	UUID		FALSE	FALSE	RelationshipStatuses	Active, terminated
+4	EntityRelationships	priority	INTEGER		TRUE	FALSE		Importance
+4	EntityRelationships	metadata	JSONB		TRUE	FALSE		Additional information
+4	EntityRelationships	created_by	UUID		TRUE	FALSE	Users	Who created the relationship
+4	EntityRelationships	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	EntityRelationships	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	EntityRelationships	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	CompetitionStages	id	UUID		FALSE	TRUE		Unique ID
+4	CompetitionStages	competition_season_id	UUID		FALSE	FALSE	CompetitionSeasons	Season to which this phase belongs
+4	CompetitionStages	competition_stage_type_id	UUID		FALSE	FALSE	CompetitionStageTypes	Type fase
+4	CompetitionStages	name	TEXT		FALSE	FALSE		Order within season
+4	CompetitionStages	order_number	INTEGER		FALSE	FALSE		Phase start date
+4	CompetitionStages	start_date	DATE		TRUE	FALSE		Phase end date
+4	CompetitionStages	end_date	DATE		TRUE	FALSE		Rules for this phase
+4	CompetitionStages	ruleset_id	UUID		TRUE	FALSE	CompetitionSettings	Are scores being kept?
+4	CompetitionStages	standings_enabled	BOOLEAN		FALSE	FALSE		Is this a playoff phase
+4	CompetitionStages	playoffs_enabled	BOOLEAN		FALSE	FALSE		Season in which this structure applies
+4	CompetitionStages	description	TEXT		TRUE	FALSE		Description
+4	CompetitionStages	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	CompetitionStages	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	CompetitionStages	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	LeagueGroups	id	UUID		FALSE	TRUE		Unique ID
+4	LeagueGroups	competition_season_id	UUID		TRUE	FALSE	CompetitionSeasons	Upper group
+4	LeagueGroups	parent_group_id	UUID		TRUE	FALSE	LeagueGroups	Type of group
+4	LeagueGroups	group_type_id	UUID		FALSE	FALSE	LeagueGroupTypes	Group name
+4	LeagueGroups	name	TEXT		FALSE	FALSE		Level in hierarchy
+4	LeagueGroups	short_name	TEXT		TRUE	FALSE		Abbreviation
+4	LeagueGroups	level_number	INTEGER		TRUE	FALSE		Sorting order
+4	LeagueGroups	order_number	INTEGER		TRUE	FALSE		Regional location
+4	LeagueGroups	location_id	UUID		TRUE	FALSE	Locations	Specific rules
+4	LeagueGroups	ruleset_id	UUID		TRUE	FALSE	CompetitionSettings	Active
+4	LeagueGroups	description	TEXT		TRUE	FALSE		Description
+4	LeagueGroups	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+4	LeagueGroups	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	LeagueGroups	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	LeagueGroups	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	PeopleGroups	id	UUID		FALSE	TRUE		Unique ID
+4	PeopleGroups	organization_id	UUID		TRUE	FALSE	Organizations	Active group
+4	PeopleGroups	parent_group_id	UUID		TRUE	FALSE	PeopleGroups	Type of group
+4	PeopleGroups	name	TEXT		FALSE	FALSE		Level in hierarchy
+4	PeopleGroups	group_type_id	UUID		FALSE	FALSE	MembershipTypes	Group name
+4	PeopleGroups	description	TEXT		TRUE	FALSE		Description
+4	PeopleGroups	is_active	BOOLEAN		FALSE	FALSE		Organization/team owner
+4	PeopleGroups	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	PeopleGroups	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	PeopleGroups	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	OrganizationSettings	id	UUID		FALSE	TRUE		Unique ID
+4	OrganizationSettings	organization_id	UUID		FALSE	FALSE	Organizations	Name of institution
+4	OrganizationSettings	setting_key	TEXT		FALSE	FALSE		Value of institution
+4	OrganizationSettings	setting_value	JSONB		FALSE	FALSE		Type value (text, number, boolean, json)
+4	OrganizationSettings	value_type	TEXT		FALSE	FALSE		Explanation of settings
+4	OrganizationSettings	description	TEXT		TRUE	FALSE		Effective date
+4	OrganizationSettings	valid_from	DATE		TRUE	FALSE		End date
+4	OrganizationSettings	valid_until	DATE		TRUE	FALSE		Competition for which institution applies
+4	OrganizationSettings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	OrganizationSettings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	OrganizationSettings	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	CompetitionSettings	id	UUID		FALSE	TRUE		Unique ID
+4	CompetitionSettings	competition_id	UUID		TRUE	FALSE	Competitions	Specific season to which the setting applies
+4	CompetitionSettings	competition_season_id	UUID		TRUE	FALSE	CompetitionSeasons	Specific phase for which the institution applies
+4	CompetitionSettings	competition_stage_id	UUID		TRUE	FALSE	CompetitionStages	Type of value
+4	CompetitionSettings	setting_key	TEXT		FALSE	FALSE		Value of institution
+4	CompetitionSettings	setting_value	JSONB		FALSE	FALSE		Type value (text, number, boolean, json)
+4	CompetitionSettings	value_type	TEXT		FALSE	FALSE		Team for which the institution applies
+4	CompetitionSettings	description	TEXT		TRUE	FALSE		Effective date
+4	CompetitionSettings	valid_from	DATE		TRUE	FALSE		End date
+4	CompetitionSettings	valid_until	DATE		TRUE	FALSE		Competition for which institution applies
+4	CompetitionSettings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	CompetitionSettings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	CompetitionSettings	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TeamSettings	id	UUID		FALSE	TRUE		Unique ID
+4	TeamSettings	team_id	UUID		FALSE	FALSE	Teams	Grouping institution
+4	TeamSettings	setting_key	TEXT		FALSE	FALSE		Value of institution
+4	TeamSettings	setting_value	JSONB		FALSE	FALSE		Type value (text, number, boolean, json)
+4	TeamSettings	value_type	TEXT		FALSE	FALSE		Explanation of settings
+4	TeamSettings	description	TEXT		TRUE	FALSE		Effective date
+4	TeamSettings	valid_from	DATE		TRUE	FALSE		End date
+4	TeamSettings	valid_until	DATE		TRUE	FALSE		Competition for which institution applies
+4	TeamSettings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TeamSettings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TeamSettings	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	SystemSettings	id	UUID		FALSE	TRUE		Unique ID
+4	SystemSettings	setting_key	TEXT		FALSE	FALSE		Value of institution
+4	SystemSettings	setting_value	JSONB		FALSE	FALSE		Type value (text, number, boolean, json)
+4	SystemSettings	value_type	TEXT		FALSE	FALSE		Explanation of settings
+4	SystemSettings	description	TEXT		TRUE	FALSE		Effective date
+4	SystemSettings	category	TEXT		TRUE	FALSE		May be visible to users
+4	SystemSettings	is_public	BOOLEAN		FALSE	FALSE		Role/type of player
+4	SystemSettings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	SystemSettings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	SystemSettings	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Staff	id	UUID		FALSE	TRUE		Unique ID
+4	Staff	person_id	UUID		FALSE	FALSE	Persons	Linked person
+4	Staff	staff_role_id	UUID		TRUE	FALSE	StaffRoles	Training/certification level
+4	Staff	certification_level	TEXT		TRUE	FALSE		Specialization
+4	Staff	specialization	TEXT		TRUE	FALSE		Active, stopped, available
+4	Staff	nationality_id	UUID		TRUE	FALSE	Countries	Nationality
+4	Staff	profile_media_id	UUID		TRUE	FALSE	MediaFiles	Profile picture
+4	Staff	biography	TEXT		TRUE	FALSE		Biography
+4	Staff	status	TEXT		TRUE	FALSE		Role of official
+4	Staff	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Staff	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Staff	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Officials	id	UUID		FALSE	TRUE		Unique ID
+4	Officials	person_id	UUID		FALSE	FALSE	Persons	Linked person
+4	Officials	official_role_id	UUID		TRUE	FALSE	OfficialRoles	Certification level
+4	Officials	certification_level	TEXT		TRUE	FALSE		Association with which an official is registered
+4	Officials	federation_id	UUID		TRUE	FALSE	Organizations	Person being linked
+4	Officials	nationality_id	UUID		TRUE	FALSE	Countries	Nationality
+4	Officials	profile_media_id	UUID		TRUE	FALSE	MediaFiles	Profile picture
+4	Officials	status	TEXT		TRUE	FALSE		Role of official
+4	Officials	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Officials	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Officials	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Memberships	id	UUID		FALSE	TRUE		Unique ID
+4	Memberships	person_id	UUID		FALSE	FALSE	Persons	Organization to which the person is linked
+4	Memberships	organization_id	UUID		TRUE	FALSE	Organizations	Team to which the person is linked
+4	Memberships	team_id	UUID		TRUE	FALSE	Teams	Group to which person is linked
+4	Memberships	people_group_id	UUID		TRUE	FALSE	PeopleGroups	Membership type
+4	Memberships	membership_type_id	UUID		FALSE	FALSE	MembershipTypes	Specific role
+4	Memberships	role_name	TEXT		TRUE	FALSE		Start membership
+4	Memberships	start_date	DATE		TRUE	FALSE		End of membership
+4	Memberships	end_date	DATE		TRUE	FALSE		Membership status
+4	Memberships	status_id	UUID		TRUE	FALSE	MembershipStatuses	Main relationship
+4	Memberships	is_primary	BOOLEAN		FALSE	FALSE		Player with a contract
+4	Memberships	notes	TEXT		TRUE	FALSE		Comments
+4	Memberships	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Memberships	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Memberships	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Schedules	id	UUID		FALSE	TRUE		Unique ID
+4	Schedules	competition_stage_id	UUID		FALSE	FALSE	CompetitionStages	Schedule name
+4	Schedules	name	TEXT		TRUE	FALSE		Scheme type
+4	Schedules	schedule_type_id	UUID		FALSE	FALSE	ScheduleTypes	Manual, automatic, import
+4	Schedules	generated_by	TEXT		TRUE	FALSE		Start schedule
+4	Schedules	start_date	DATE		TRUE	FALSE		End of schedule
+4	Schedules	end_date	DATE		TRUE	FALSE		Schedule settings
+4	Schedules	rules	JSONB		TRUE	FALSE		Draft, published, active
+4	Schedules	status_id	UUID		FALSE	FALSE	ScheduleStatuses	Publication date
+4	Schedules	published_at	TIMESTAMP		TRUE	FALSE		Competitive phase
+4	Schedules	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Injuries	id	UUID		FALSE	TRUE		Unique ID
+4	Injuries	person_id	UUID		FALSE	FALSE	Persons	Player (if applicable)
+4	Injuries	player_id	UUID		TRUE	FALSE	Players	Type of injury
+4	Injuries	injury_type_id	UUID		FALSE	FALSE	InjuryTypes	Body part
+4	Injuries	body_part_id	UUID		TRUE	FALSE	BodyParts	Serious injury
+4	Injuries	severity_id	UUID		TRUE	FALSE	InjurySeverities	Date of origin
+4	Injuries	occurred_date	DATE		TRUE	FALSE		Diagnosis date
+4	Injuries	diagnosed_date	DATE		TRUE	FALSE		Expected return
+4	Injuries	expected_return_date	DATE		TRUE	FALSE		Actual return
+4	Injuries	actual_return_date	DATE		TRUE	FALSE		Active, recovered, doubt
+4	Injuries	status_id	UUID		FALSE	FALSE	InjuryStatuses	Medical details
+4	Injuries	description	TEXT		TRUE	FALSE		Description
+4	Injuries	medical_notes	JSONB		TRUE	FALSE		Organization that manages the program
+4	Injuries	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Injuries	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Injuries	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TrainingPrograms	id	UUID		FALSE	TRUE		Unique ID
+4	TrainingPrograms	organization_id	UUID		TRUE	FALSE	Organizations	Team for which the program applies
+4	TrainingPrograms	team_id	UUID		TRUE	FALSE	Teams	Name of training program
+4	TrainingPrograms	season_id	UUID		TRUE	FALSE	CompetitionSeasons	Competition
+4	TrainingPrograms	name	TEXT		FALSE	FALSE		Type of training
+4	TrainingPrograms	program_type_id	UUID		FALSE	FALSE	TrainingProgramTypes	Objective
+4	TrainingPrograms	goal	TEXT		TRUE	FALSE		Level
+4	TrainingPrograms	level_id	UUID		TRUE	FALSE		Early period
+4	TrainingPrograms	start_date	DATE		TRUE	FALSE		End period
+4	TrainingPrograms	end_date	DATE		TRUE	FALSE		Responsible coach
+4	TrainingPrograms	coach_id	UUID		TRUE	FALSE	Staff	Exercises and content
+4	TrainingPrograms	exercises	JSONB		TRUE	FALSE		Draft, active, completed
+4	TrainingPrograms	status_id	UUID		TRUE	FALSE	TrainingStatuses	Accompanying program
+4	TrainingPrograms	notes	TEXT		TRUE	FALSE		Comments
+4	TrainingPrograms	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TrainingPrograms	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TrainingPrograms	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TrainingSessions	id	UUID		FALSE	TRUE		Unique ID
+4	TrainingSessions	training_program_id	UUID		TRUE	FALSE	TrainingPrograms	Organization
+4	TrainingSessions	organization_id	UUID		TRUE	FALSE	Organizations	Training location
+4	TrainingSessions	team_id	UUID		TRUE	FALSE	Teams	Goals scored
+4	TrainingSessions	location_id	UUID		TRUE	FALSE	Locations	Accompanist
+4	TrainingSessions	coach_id	UUID		TRUE	FALSE	Staff	Training name
+4	TrainingSessions	session_type_id	UUID		FALSE	FALSE	TrainingSessionTypes	Objective
+4	TrainingSessions	title	TEXT		TRUE	FALSE		Planned start
+4	TrainingSessions	scheduled_start	TIMESTAMP		TRUE	FALSE		Planned end
+4	TrainingSessions	scheduled_end	TIMESTAMP		TRUE	FALSE		Actual start
+4	TrainingSessions	actual_start	TIMESTAMP		TRUE	FALSE		Real end
+4	TrainingSessions	actual_end	TIMESTAMP		TRUE	FALSE		Register attendance
+4	TrainingSessions	attendance_required	BOOLEAN		FALSE	FALSE		Exercises
+4	TrainingSessions	exercises	JSONB		TRUE	FALSE		Planned, completed, cancelled
+4	TrainingSessions	notes	TEXT		TRUE	FALSE		Comments
+4	TrainingSessions	status_id	UUID		TRUE	FALSE	TrainingStatuses	Training session
+4	TrainingSessions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TrainingSessions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TrainingSessions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TrainingResults	id	UUID		FALSE	TRUE		Unique ID
+4	TrainingResults	training_session_id	UUID		FALSE	FALSE	TrainingSessions	Person to whom the result relates
+4	TrainingResults	person_id	UUID		FALSE	FALSE	Persons	Player, if applicable
+4	TrainingResults	player_id	UUID		TRUE	FALSE	Players	Present, absent, injured
+4	TrainingResults	attendance_status_id	UUID		TRUE	FALSE	AttendanceStatuses	Commitment/assessment
+4	TrainingResults	effort_rating	INTEGER		TRUE	FALSE		Skills assessment
+4	TrainingResults	skill_rating	INTEGER		TRUE	FALSE		Condition assessment
+4	TrainingResults	fitness_rating	INTEGER		TRUE	FALSE		Overall coach rating
+4	TrainingResults	coach_rating	INTEGER		TRUE	FALSE		Measurement data/tests
+4	TrainingResults	test_results	JSONB		TRUE	FALSE		Areas for development
+4	TrainingResults	improvement_notes	TEXT		TRUE	FALSE		Personal goals
+4	TrainingResults	goals	JSONB		TRUE	FALSE		Entered by
+4	TrainingResults	created_by	UUID		TRUE	FALSE	Users	Person who is a scout
+4	TrainingResults	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TrainingResults	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TrainingResults	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Scouts	id	UUID		FALSE	TRUE		Unique ID
+4	Scouts	person_id	UUID		FALSE	FALSE	Persons	Organization for which the scout works
+4	Scouts	organization_id	UUID		TRUE	FALSE	Organizations	Scout type
+4	Scouts	scout_type_id	UUID		TRUE	FALSE	ScoutTypes	Level/certification
+4	Scouts	certification_level	TEXT		TRUE	FALSE		Specializations
+4	Scouts	specialization	JSONB		TRUE	FALSE		Areas where Scout is active
+4	Scouts	regions_covered	JSONB		TRUE	FALSE		Active, inactive
+4	Scouts	status_id	UUID		FALSE	FALSE	ScoutStatuses	Scout who receives an assignment
+4	Scouts	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Scouts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Scouts	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	ScoutAssignments	id	UUID		FALSE	TRUE		Unique ID
+4	ScoutAssignments	scout_id	UUID		FALSE	FALSE	Scouts	Organization for which scouting is done
+4	ScoutAssignments	organization_id	UUID		TRUE	FALSE	Organizations	Competition being searched for
+4	ScoutAssignments	competition_id	UUID		TRUE	FALSE	Competitions	Region targeted by the assignment
+4	ScoutAssignments	region_id	UUID		TRUE	FALSE	Regions	Assignment type
+4	ScoutAssignments	assignment_type_id	UUID		FALSE	FALSE	ScoutAssignmentTypes	Player, team, league, etc.
+4	ScoutAssignments	target_type_id	UUID		TRUE	FALSE	ScoutTargetTypes	Specific player
+4	ScoutAssignments	target_player_id	UUID		TRUE	FALSE	Players	Specific team
+4	ScoutAssignments	target_team_id	UUID		TRUE	FALSE	Teams	Start assignment
+4	ScoutAssignments	start_date	DATE		TRUE	FALSE		End of assignment
+4	ScoutAssignments	end_date	DATE		TRUE	FALSE		Priority
+4	ScoutAssignments	priority	INTEGER		TRUE	FALSE		Open, active, completed
+4	ScoutAssignments	status_id	UUID		FALSE	FALSE	ScoutAssignmentStatuses	Assignment description
+4	ScoutAssignments	instructions	TEXT		TRUE	FALSE		Competition to which the cap applies
+4	ScoutAssignments	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ScoutAssignments	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	ScoutAssignments	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	SalaryCaps	id	UUID		FALSE	TRUE		Unique ID
+4	SalaryCaps	competition_id	UUID		TRUE	FALSE	Competitions	Specific organization if different
+4	SalaryCaps	season_id	UUID		FALSE	FALSE	CompetitionSeasons	Competition
+4	SalaryCaps	organization_id	UUID		TRUE	FALSE	Organizations	Salary cap type
+4	SalaryCaps	cap_type_id	UUID		FALSE	FALSE	SalaryCapTypes	Minimum budget
+4	SalaryCaps	minimum_amount	DECIMAL		TRUE	FALSE		Maximum budget
+4	SalaryCaps	maximum_amount	DECIMAL		TRUE	FALSE		Maximum number of players
+4	SalaryCaps	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	SalaryCaps	roster_limit	INTEGER		TRUE	FALSE		Start date
+4	SalaryCaps	active_from	DATE		TRUE	FALSE		Cap rules and exceptions
+4	SalaryCaps	active_until	DATE		TRUE	FALSE		Competition for which institution applies
+4	SalaryCaps	rules	JSONB		TRUE	FALSE		Active, historical
+4	SalaryCaps	status_id	UUID		FALSE	FALSE	SalaryCapStatuses	Organization/team
+4	SalaryCaps	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	SalaryCaps	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	SalaryCaps	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Payroll	id	UUID		FALSE	TRUE		Unique ID
+4	Payroll	organization_id	UUID		FALSE	FALSE	Organizations	Person with payment
+4	Payroll	season_id	UUID		FALSE	FALSE	CompetitionSeasons	Competition
+4	Payroll	person_id	UUID		TRUE	FALSE	Persons	Staff member, if applicable
+4	Payroll	player_id	UUID		TRUE	FALSE	Players	Present, absent, injured
+4	Payroll	staff_id	UUID		TRUE	FALSE	Staff	Associated contract
+4	Payroll	contract_id	UUID		TRUE	FALSE		Bonuses
+4	Payroll	salary_amount	DECIMAL		FALSE	FALSE		Currency
+4	Payroll	bonus_amount	DECIMAL		TRUE	FALSE		Amount that counts towards salary cap
+4	Payroll	cap_hit_amount	DECIMAL		TRUE	FALSE		Month, season, year
+4	Payroll	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Payroll	payment_period	TEXT		TRUE	FALSE		Start payment
+4	Payroll	start_date	DATE		TRUE	FALSE		End of payment
+4	Payroll	end_date	DATE		TRUE	FALSE		Additional financial agreements
+4	Payroll	status_id	UUID		FALSE	FALSE	PayrollStatuses	Active, terminated
+4	Payroll	details	JSONB		TRUE	FALSE		Organization/team hosting the sponsor
+4	Payroll	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Payroll	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Payroll	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Sponsorships	id	UUID		FALSE	TRUE		Unique ID
+4	Sponsorships	organization_id	UUID		FALSE	FALSE	Organizations	Sponsoring company, if present
+4	Sponsorships	sponsor_organization_id	UUID		TRUE	FALSE	Organizations	Individual sponsor
+4	Sponsorships	sponsor_person_id	UUID		TRUE	FALSE	Persons	Type of sponsorship
+4	Sponsorships	sponsorship_type_id	UUID		FALSE	FALSE	SponsorshipTypes	Competition context
+4	Sponsorships	competition_id	UUID		TRUE	FALSE	Competitions	Sponsorship value
+4	Sponsorships	season_id	UUID		TRUE	FALSE	CompetitionSeasons	Competition
+4	Sponsorships	start_date	DATE		FALSE	FALSE		Cap rules and exceptions
+4	Sponsorships	end_date	DATE		TRUE	FALSE		Competition for which institution applies
+4	Sponsorships	value_amount	DECIMAL		TRUE	FALSE		Counter-performances
+4	Sponsorships	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Sponsorships	benefits	JSONB		TRUE	FALSE		Active, expired
+4	Sponsorships	status_id	UUID		FALSE	FALSE	SponsorshipStatuses	Brand name
+4	Sponsorships	notes	TEXT		TRUE	FALSE		Comments
+4	Sponsorships	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Sponsorships	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Sponsorships	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Brands	id	UUID		FALSE	TRUE		Unique ID
+4	Brands	name	TEXT		FALSE	FALSE		Manufacturer if linked
+4	Brands	manufacturer_id	UUID		TRUE	FALSE	Manufacturers	Brand type
+4	Brands	brand_type_id	UUID		FALSE	FALSE	BrandTypes	Country of origin
+4	Brands	country_id	UUID		TRUE	FALSE	Countries	Description
+4	Brands	website	TEXT		TRUE	FALSE		Website
+4	Brands	logo_media_id	UUID		TRUE	FALSE	MediaFiles	Logo
+4	Brands	description	TEXT		TRUE	FALSE		Active/inactive
+4	Brands	status_id	UUID		FALSE	FALSE	BrandStatuses	Manufacturer's name
+4	Brands	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Brands	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Brands	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Manufacturers	id	UUID		FALSE	TRUE		Unique ID
+4	Manufacturers	name	TEXT		FALSE	FALSE		Manufacturer type
+4	Manufacturers	manufacturer_type_id	UUID		FALSE	FALSE	ManufacturerTypes	Country of production / origin
+4	Manufacturers	country_id	UUID		TRUE	FALSE	Countries	Parent organization, if applicable
+4	Manufacturers	parent_organization_id	UUID		TRUE	FALSE	Organizations	Certifications
+4	Manufacturers	website	TEXT		TRUE	FALSE		Website
+4	Manufacturers	description	TEXT		TRUE	FALSE		Active/inactive
+4	Manufacturers	certifications	JSONB		TRUE	FALSE		Used model
+4	Manufacturers	status_id	UUID		FALSE	FALSE	ManufacturerStatuses	Manufacturer's name
+4	Manufacturers	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Manufacturers	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Manufacturers	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	PlayerEquipment	id	UUID		FALSE	TRUE		Unique ID
+4	PlayerEquipment	player_id	UUID		FALSE	FALSE	Players	Season
+4	PlayerEquipment	equipment_model_id	UUID		FALSE	FALSE	EquipmentModels	Type of equipment
+4	PlayerEquipment	equipment_type_id	UUID		FALSE	FALSE	EquipmentTypes	Property type
+4	PlayerEquipment	ownership_type_id	UUID		FALSE	FALSE	OwnershipTypes	Team/organization that supplies equipment
+4	PlayerEquipment	organization_id	UUID		TRUE	FALSE	Organizations	Date obtained
+4	PlayerEquipment	acquired_date	DATE		TRUE	FALSE		Date out of service
+4	PlayerEquipment	retired_date	DATE		TRUE	FALSE		Active, reserve, sold
+4	PlayerEquipment	usage_status_id	UUID		FALSE	FALSE	EquipmentUsageStatuses	Custom properties
+4	PlayerEquipment	custom_data	JSONB		TRUE	FALSE		Award name
+4	PlayerEquipment	notes	TEXT		TRUE	FALSE		Comments
+4	PlayerEquipment	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	PlayerEquipment	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	PlayerEquipment	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Awards	id	UUID		FALSE	TRUE		Unique ID
+4	Awards	name	TEXT		FALSE	FALSE		Award type
+4	Awards	award_type_id	UUID		FALSE	FALSE	AwardTypes	Issuing organization
+4	Awards	organization_id	UUID		TRUE	FALSE	Organizations	Competition in which the award applies
+4	Awards	competition_id	UUID		TRUE	FALSE	Competitions	Selection criteria
+4	Awards	description	TEXT		TRUE	FALSE		Active/inactive
+4	Awards	criteria	JSONB		TRUE	FALSE		Image/trophy
+4	Awards	image_media_id	UUID		TRUE	FALSE	MediaFiles	Award
+4	Awards	status_id	UUID		FALSE	FALSE	AwardStatuses	Manufacturer's name
+4	Awards	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Awards	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Awards	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	AwardResults	id	UUID		FALSE	TRUE		Unique ID
+4	AwardResults	award_id	UUID		FALSE	FALSE	Awards	Winner person
+4	AwardResults	season_id	UUID		TRUE	FALSE	CompetitionSeasons	Competition
+4	AwardResults	competition_id	UUID		TRUE	FALSE	Competitions	Team for which the player is registered
+4	AwardResults	person_id	UUID		TRUE	FALSE	Persons	Winner player
+4	AwardResults	player_id	UUID		TRUE	FALSE	Players	Winner team
+4	AwardResults	team_id	UUID		TRUE	FALSE	Teams	Staff member winner
+4	AwardResults	staff_id	UUID		TRUE	FALSE	Staff	Rank (1, 2, 3 etc.)
+4	AwardResults	rank_position	INTEGER		TRUE	FALSE		Number of votes
+4	AwardResults	votes	INTEGER		TRUE	FALSE		Statistics based on
+4	AwardResults	statistics_snapshot	JSONB		TRUE	FALSE		Issue date
+4	AwardResults	award_date	DATE		TRUE	FALSE		Achievement name
+4	AwardResults	notes	TEXT		TRUE	FALSE		Comments
+4	AwardResults	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	AwardResults	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	AwardResults	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Achievements	id	UUID		FALSE	TRUE		Unique ID
+4	Achievements	name	TEXT		FALSE	FALSE		Type achievement
+4	Achievements	achievement_type_id	UUID		FALSE	FALSE	AchievementTypes	Conditions to achieve
+4	Achievements	description	TEXT		TRUE	FALSE		Description
+4	Achievements	criteria	JSONB		TRUE	FALSE		Icon/badge
+4	Achievements	icon_media_id	UUID		TRUE	FALSE	MediaFiles	Rarity
+4	Achievements	rarity_level_id	UUID		TRUE	FALSE	AchievementRarities	Point value
+4	Achievements	points_value	INTEGER		TRUE	FALSE		Organization that uses achievement
+4	Achievements	organization_id	UUID		TRUE	FALSE	Organizations	Achievement that has been achieved
+4	Achievements	competition_id	UUID		TRUE	FALSE	Competitions	Sponsorship value
+4	Achievements	status_id	UUID		FALSE	FALSE	AchievementStatuses	Manufacturer's name
+4	Achievements	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Achievements	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Achievements	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Badges	id	UUID		FALSE	TRUE		Unique ID
+4	Badges	achievement_id	UUID		FALSE	FALSE	Achievements	Person who has the badge
+4	Badges	person_id	UUID		FALSE	FALSE	Persons	Team, if applicable
+4	Badges	player_id	UUID		TRUE	FALSE	Players	Present, absent, injured
+4	Badges	team_id	UUID		TRUE	FALSE	Teams	Organization, if applicable
+4	Badges	organization_id	UUID		TRUE	FALSE	Organizations	Date achieved
+4	Badges	earned_date	DATE		FALSE	FALSE		Manual, automatic, system
+4	Badges	source_type_id	UUID		TRUE	FALSE	BadgeSources	Evidence/statistics
+4	Badges	evidence_data	JSONB		TRUE	FALSE		Visible/hidden
+4	Badges	display_status_id	UUID		TRUE	FALSE	BadgeDisplayStatuses	Role name
+4	Badges	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Badges	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Badges	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Roles	id	UUID		FALSE	TRUE		Unique ID
+4	Roles	name	TEXT		FALSE	FALSE		Role type
+4	Roles	description	TEXT		TRUE	FALSE		Description
+4	Roles	role_type_id	UUID		FALSE	FALSE	RoleTypes	Organization-specific role
+4	Roles	organization_id	UUID		TRUE	FALSE	Organizations	System role or local role
+4	Roles	system_level	BOOLEAN		FALSE	FALSE		Rights configuration
+4	Roles	permissions	JSONB		TRUE	FALSE		Name permission
+4	Roles	status_id	UUID		FALSE	FALSE	RoleStatuses	Manufacturer's name
+4	Roles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Roles	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Roles	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Permissions	id	UUID		FALSE	TRUE		Unique ID
+4	Permissions	name	TEXT		FALSE	FALSE		Module to which the law relates
+4	Permissions	module	TEXT		FALSE	FALSE		Action (view/create/update/delete)
+4	Permissions	action	TEXT		FALSE	FALSE		Explanation of permission
+4	Permissions	description	TEXT		TRUE	FALSE		Group
+4	Permissions	permission_group_id	UUID		TRUE	FALSE	PermissionGroups	User who performed the action
+4	Permissions	status_id	UUID		FALSE	FALSE	PermissionStatuses	Manufacturer's name
+4	Permissions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Permissions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Permissions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	AuditLog	id	UUID		FALSE	TRUE		Unique ID
+4	AuditLog	user_id	UUID		TRUE	FALSE	Users	Organization context
+4	AuditLog	organization_id	UUID		TRUE	FALSE	Organizations	Type of action
+4	AuditLog	action_type_id	UUID		FALSE	FALSE	AuditActionTypes	Type of object/table
+4	AuditLog	entity_type	TEXT		FALSE	FALSE		ID of modified object
+4	AuditLog	entity_id	UUID		TRUE	FALSE		Old values
+4	AuditLog	old_values	JSONB		TRUE	FALSE		New values
+4	AuditLog	new_values	JSONB		TRUE	FALSE		IP address
+4	AuditLog	ip_address	INET		TRUE	FALSE		Browser/app information
+4	AuditLog	user_agent	TEXT		TRUE	FALSE		Moment of action
+4	AuditLog	created_at	TIMESTAMP		FALSE	FALSE		Settings per organization
+4	SecuritySettings	id	UUID		FALSE	TRUE		Unique ID
+4	SecuritySettings	organization_id	UUID		TRUE	FALSE	Organizations	User-specific settings
+4	SecuritySettings	user_id	UUID		TRUE	FALSE	Users	Name of institution
+4	SecuritySettings	setting_key	TEXT		FALSE	FALSE		Value setting
+4	SecuritySettings	setting_value	JSONB		FALSE	FALSE		Who is allowed to see this
+4	SecuritySettings	access_level_id	UUID		TRUE	FALSE	AccessLevels	Event type name
+4	SecuritySettings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	SecuritySettings	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	EventTypes	id	UUID		FALSE	TRUE		Unique ID
+4	EventTypes	name	TEXT		FALSE	FALSE		Event category
+4	EventTypes	category	TEXT		FALSE	FALSE		Icon/view
+4	EventTypes	description	TEXT		TRUE	FALSE		Description
+4	EventTypes	icon	TEXT		TRUE	FALSE		Event value if used
+4	EventTypes	points_value	INTEGER		TRUE	FALSE		Additional rules
+4	EventTypes	rules	JSONB		TRUE	FALSE		Name status
+4	EventTypes	status_id	UUID		FALSE	FALSE		Manufacturer's name
+4	EventTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	EventTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	EventTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	GameStatuses	id	UUID		FALSE	TRUE		Unique ID
+4	GameStatuses	name	TEXT		FALSE	FALSE		Indicates whether the match has ended
+4	GameStatuses	description	TEXT		TRUE	FALSE		Description
+4	GameStatuses	sort_order	INTEGER		TRUE	FALSE		Regional location
+4	GameStatuses	is_final	BOOLEAN		FALSE	FALSE		Name of competition type
+4	GameStatuses	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	GameStatuses	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	GameStatuses	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	CompetitionTypes	id	UUID		FALSE	TRUE		Unique ID
+4	CompetitionTypes	name	TEXT		FALSE	FALSE		Category
+4	CompetitionTypes	description	TEXT		TRUE	FALSE		Description
+4	CompetitionTypes	category	TEXT		TRUE	FALSE		Official competition
+4	CompetitionTypes	rules	JSONB		TRUE	FALSE		Active
+4	CompetitionTypes	is_official	BOOLEAN		TRUE	FALSE		Name of group type
+4	CompetitionTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	CompetitionTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	CompetitionTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	CompetitionTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	LeagueGroupTypes	id	UUID		FALSE	TRUE		Unique ID
+4	LeagueGroupTypes	name	TEXT		FALSE	FALSE		Level behavior
+4	LeagueGroupTypes	description	TEXT		TRUE	FALSE		Description
+4	LeagueGroupTypes	level_behavior	TEXT		TRUE	FALSE		Specific settings
+4	LeagueGroupTypes	rules	JSONB		TRUE	FALSE		Name position
+4	LeagueGroupTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	LeagueGroupTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	LeagueGroupTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	LeagueGroupTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Positions	id	UUID		FALSE	TRUE		Unique ID
+4	Positions	name	TEXT		FALSE	FALSE		Forward, Defense, Goalie
+4	Positions	abbreviation	TEXT		TRUE	FALSE		Abbreviation
+4	Positions	position_group	TEXT		TRUE	FALSE		Additional settings
+4	Positions	category	TEXT		FALSE	FALSE		Official competition
+4	Positions	description	TEXT		TRUE	FALSE		Description
+4	Positions	sort_order	INTEGER		TRUE	FALSE		Regional location
+4	Positions	rules	JSONB		TRUE	FALSE		Player role name
+4	Positions	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	Positions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Positions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Positions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	PlayerRoles	id	UUID		FALSE	TRUE		Unique ID
+4	PlayerRoles	name	TEXT		FALSE	FALSE		Staff role name
+4	PlayerRoles	role_category	TEXT		TRUE	FALSE		Official competition
+4	PlayerRoles	description	TEXT		TRUE	FALSE		Description
+4	PlayerRoles	rules	JSONB		TRUE	FALSE		Player role name
+4	PlayerRoles	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	PlayerRoles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	PlayerRoles	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	PlayerRoles	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	StaffRoles	id	UUID		FALSE	TRUE		Unique ID
+4	StaffRoles	name	TEXT		FALSE	FALSE		Level within the organization
+4	StaffRoles	role_category	TEXT		TRUE	FALSE		Official competition
+4	StaffRoles	description	TEXT		TRUE	FALSE		Description
+4	StaffRoles	hierarchy_level	INTEGER		TRUE	FALSE		Contract type name
+4	StaffRoles	rules	JSONB		TRUE	FALSE		Player role name
+4	StaffRoles	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	StaffRoles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	StaffRoles	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	StaffRoles	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	ContractTypes	id	UUID		FALSE	TRUE		Unique ID
+4	ContractTypes	name	TEXT		FALSE	FALSE		Player, staff, sponsor, etc.
+4	ContractTypes	category	TEXT		FALSE	FALSE		Contract rules
+4	ContractTypes	description	TEXT		TRUE	FALSE		Description
+4	ContractTypes	rules	JSONB		TRUE	FALSE		Paid contract
+4	ContractTypes	is_paid	BOOLEAN		FALSE	FALSE		Transfer type name
+4	ContractTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	ContractTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ContractTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	ContractTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TransferTypes	id	UUID		FALSE	TRUE		Unique ID
+4	TransferTypes	name	TEXT		FALSE	FALSE		May have a transfer fee
+4	TransferTypes	category	TEXT		FALSE	FALSE		Official competition
+4	TransferTypes	description	TEXT		TRUE	FALSE		Description
+4	TransferTypes	requires_fee	BOOLEAN		FALSE	FALSE		Name of injury type
+4	TransferTypes	rules	JSONB		TRUE	FALSE		Name status
+4	TransferTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	TransferTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TransferTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TransferTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	InjuryTypes	id	UUID		FALSE	TRUE		Unique ID
+4	InjuryTypes	name	TEXT		FALSE	FALSE		Body area
+4	InjuryTypes	category	TEXT		TRUE	FALSE		Official competition
+4	InjuryTypes	description	TEXT		TRUE	FALSE		Description
+4	InjuryTypes	body_area	TEXT		TRUE	FALSE		Standard severity level
+4	InjuryTypes	severity_default	INTEGER		TRUE	FALSE		Award type name
+4	InjuryTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	InjuryTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	InjuryTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	InjuryTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	AwardTypes	id	UUID		FALSE	TRUE		Unique ID
+4	AwardTypes	name	TEXT		FALSE	FALSE		Range
+4	AwardTypes	scope	TEXT		TRUE	FALSE		How the winner is determined
+4	AwardTypes	category	TEXT		TRUE	FALSE		Official competition
+4	AwardTypes	description	TEXT		TRUE	FALSE		Description
+4	AwardTypes	voting_method	TEXT		TRUE	FALSE		Equipment type name
+4	AwardTypes	criteria	JSONB		TRUE	FALSE		Image/trophy
+4	AwardTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	AwardTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	AwardTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	AwardTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	EquipmentTypes	id	UUID		FALSE	TRUE		Unique ID
+4	EquipmentTypes	name	TEXT		FALSE	FALSE		Main category or Target group
+4	EquipmentTypes	category	TEXT		FALSE	FALSE		Top type
+4	EquipmentTypes	parent_type_id	UUID		TRUE	FALSE	EquipmentTypes	Expected specifications
+4	EquipmentTypes	description	TEXT		TRUE	FALSE		Description
+4	EquipmentTypes	specifications_schema	JSONB		TRUE	FALSE		Name of organization type
+4	EquipmentTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	EquipmentTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	EquipmentTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	EquipmentTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	OrganizationTypes	id	UUID		FALSE	TRUE		Unique ID
+4	OrganizationTypes	name	TEXT		FALSE	FALSE		Main category
+4	OrganizationTypes	category	TEXT		FALSE	FALSE		Hierarchy within types
+4	OrganizationTypes	description	TEXT		TRUE	FALSE		Description
+4	OrganizationTypes	parent_type_id	UUID		TRUE	FALSE	OrganizationTypes	Membership type name
+4	OrganizationTypes	rules	JSONB		TRUE	FALSE		Player role name
+4	OrganizationTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	OrganizationTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	OrganizationTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	OrganizationTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	MembershipTypes	id	UUID		FALSE	TRUE		Unique ID
+4	MembershipTypes	name	TEXT		FALSE	FALSE		Person, Organization, Team
+4	MembershipTypes	category	TEXT		FALSE	FALSE		Official competition
+4	MembershipTypes	description	TEXT		TRUE	FALSE		Description
+4	MembershipTypes	applies_to	TEXT		TRUE	FALSE		Relationship name
+4	MembershipTypes	rules	JSONB		TRUE	FALSE		Name status
+4	MembershipTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	MembershipTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	MembershipTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	MembershipTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	RelationshipTypes	id	UUID		FALSE	TRUE		Unique ID
+4	RelationshipTypes	name	TEXT		FALSE	FALSE		Opposite relationship
+4	RelationshipTypes	reverse_name	TEXT		TRUE	FALSE		Relationship category
+4	RelationshipTypes	category	TEXT		FALSE	FALSE		Whether direction is important
+4	RelationshipTypes	description	TEXT		TRUE	FALSE		Description
+4	RelationshipTypes	source_entity_type	TEXT		FALSE	FALSE		Type of source entity
+4	RelationshipTypes	target_entity_type	TEXT		FALSE	FALSE		Target entity type
+4	RelationshipTypes	is_directional	BOOLEAN		FALSE	FALSE		Inverse relationship
+4	RelationshipTypes	inverse_relationship_name	TEXT		TRUE	FALSE		Author of the message
+4	RelationshipTypes	rules	JSONB		TRUE	FALSE		Name status
+4	RelationshipTypes	is_active	BOOLEAN		FALSE	FALSE		Active in system
+4	RelationshipTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	RelationshipTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	RelationshipTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Posts	id	UUID		FALSE	TRUE		Unique ID
+4	Posts	author_user_id	UUID		FALSE	FALSE	Users	Optional connection
+4	Posts	entity_type	TEXT		TRUE	FALSE		ID of linked entity
+4	Posts	entity_id	UUID		TRUE	FALSE		Title if used as article/post
+4	Posts	title	TEXT		TRUE	FALSE		Update, News, Announcement, Result
+4	Posts	post_type	TEXT		FALSE	FALSE		Text content of the message
+4	Posts	content	TEXT		FALSE	FALSE		Attached photo or video
+4	Posts	media_id	UUID		TRUE	FALSE	MediaFiles	Visibility for everyone
+4	Posts	is_public	BOOLEAN		FALSE	FALSE		Message being responded to
+4	Posts	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Posts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Posts	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Comments	id	UUID		FALSE	TRUE		Unique ID
+4	Comments	post_id	UUID		FALSE	FALSE	Posts	Parent response
+4	Comments	parent_comment_id	UUID		TRUE	FALSE	Comments	User who responds
+4	Comments	author_user_id	UUID		FALSE	FALSE	Users	Text of response
+4	Comments	content	TEXT		FALSE	FALSE		Entity type (Post, Comment, GameEvent)
+4	Comments	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Comments	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Comments	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Reactions	id	UUID		FALSE	TRUE		Unique ID
+4	Reactions	target_entity_type	TEXT		FALSE	FALSE		ID of the entity that was responded to
+4	Reactions	target_entity_id	UUID		FALSE	FALSE		Type emoji/reaction
+4	Reactions	user_id	UUID		FALSE	FALSE	Users	Text of response
+4	Reactions	reaction_type	TEXT		FALSE	FALSE		User who follows
+4	Reactions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Reactions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Follows	id	UUID		FALSE	TRUE		Unique ID
+4	Follows	follower_user_id	UUID		FALSE	FALSE	Users	Type next goal
+4	Follows	target_entity_type	TEXT		FALSE	FALSE		ID of the target being tracked
+4	Follows	target_entity_id	UUID		FALSE	FALSE		Notification recipient
+4	Follows	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Notifications	id	UUID		FALSE	TRUE		Unique ID
+4	Notifications	user_id	UUID		FALSE	FALSE	Users	Notification type
+4	Notifications	notification_type	TEXT		FALSE	FALSE		Notification title
+4	Notifications	title	TEXT		FALSE	FALSE		Message content
+4	Notifications	body	TEXT		FALSE	FALSE		Extra deeplink data
+4	Notifications	payload_data	JSONB		TRUE	FALSE		Read status
+4	Notifications	is_read	BOOLEAN		FALSE	FALSE		Time of reading
+4	Notifications	read_at	TIMESTAMP		TRUE	FALSE		Channel type
+4	Notifications	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ChatChannels	id	UUID		FALSE	TRUE		Unique ID
+4	ChatChannels	channel_type	TEXT		FALSE	FALSE		Name of the channel
+4	ChatChannels	name	TEXT		TRUE	FALSE		Linked organization
+4	ChatChannels	organization_id	UUID		TRUE	FALSE	Organizations	Linked team
+4	ChatChannels	team_id	UUID		TRUE	FALSE	Teams	Private or public channel
+4	ChatChannels	is_private	BOOLEAN		FALSE	FALSE		Channel to which the message belongs
+4	ChatChannels	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ChatChannels	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	ChatChannels	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	ChatMessages	id	UUID		FALSE	TRUE		Unique ID
+4	ChatMessages	channel_id	UUID		FALSE	FALSE	ChatChannels	Message sender
+4	ChatMessages	sender_user_id	UUID		FALSE	FALSE	Users	Appendix
+4	ChatMessages	message_text	TEXT		FALSE	FALSE		Extra deeplink data
+4	ChatMessages	media_id	UUID		TRUE	FALSE	MediaFiles	Involved person
+4	ChatMessages	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ChatMessages	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	ChatMessages	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	DisciplinaryActions	id	UUID		FALSE	TRUE		Unique ID
+4	DisciplinaryActions	person_id	UUID		FALSE	FALSE	Persons	Match in which the incident took place
+4	DisciplinaryActions	player_id	UUID		TRUE	FALSE	Players	Season
+4	DisciplinaryActions	game_id	UUID		TRUE	FALSE	Games	Number of matches suspension
+4	DisciplinaryActions	suspension_games	INTEGER		TRUE	FALSE		Fine amount
+4	DisciplinaryActions	fine_amount	DECIMAL		TRUE	FALSE		Reason / violation
+4	DisciplinaryActions	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	DisciplinaryActions	reason	TEXT		FALSE	FALSE		Effective date of suspension
+4	DisciplinaryActions	start_date	DATE		TRUE	FALSE		Suspension end date
+4	DisciplinaryActions	end_date	DATE		TRUE	FALSE		Status (Ongoing, Completed, On appeal)
+4	DisciplinaryActions	status_id	UUID		FALSE	FALSE		Involved match
+4	DisciplinaryActions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	DisciplinaryActions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	DisciplinaryActions	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	GameProtests	id	UUID		FALSE	TRUE		Unique ID
+4	GameProtests	game_id	UUID		FALSE	FALSE	Games	Organization/team filing the protest
+4	GameProtests	submitting_organization_id	UUID		FALSE	FALSE	Organizations	Reason for protest
+4	GameProtests	reason	TEXT		FALSE	FALSE		Disciplinary Committee ruling
+4	GameProtests	ruling	TEXT		TRUE	FALSE		Submission date
+4	GameProtests	status_id	UUID		FALSE	FALSE		Approver
+4	GameProtests	submitted_at	TIMESTAMP		FALSE	FALSE		Date of judgment
+4	GameProtests	resolved_at	TIMESTAMP		TRUE	FALSE		Appointed official per match
+4	GameProtests	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	GameProtests	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	OfficialPayouts	id	UUID		FALSE	TRUE		Unique ID
+4	OfficialPayouts	game_official_id	UUID		FALSE	FALSE	GameOfficials	Compensation for competition
+4	OfficialPayouts	fee_amount	DECIMAL		FALSE	FALSE		Travel allowance
+4	OfficialPayouts	travel_expenses	DECIMAL		TRUE	FALSE		Payment status
+4	OfficialPayouts	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	OfficialPayouts	payout_status	TEXT		FALSE	FALSE		Payment date
+4	OfficialPayouts	paid_at	TIMESTAMP		TRUE	FALSE		Location / Ice Rink
+4	OfficialPayouts	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	OfficialPayouts	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	IceRinkSchedules	id	UUID		FALSE	TRUE		Unique ID
+4	IceRinkSchedules	location_id	UUID		FALSE	FALSE	Locations	Assigned team
+4	IceRinkSchedules	assigned_team_id	UUID		TRUE	FALSE	Teams	Paired match
+4	IceRinkSchedules	game_id	UUID		TRUE	FALSE	Games	Reservation type
+4	IceRinkSchedules	booking_type	TEXT		FALSE	FALSE		Ice cream reservation start time
+4	IceRinkSchedules	start_time	TIMESTAMP		FALSE	FALSE		Ice cream reservation end time
+4	IceRinkSchedules	end_time	TIMESTAMP		FALSE	FALSE		Details
+4	IceRinkSchedules	notes	TEXT		TRUE	FALSE		Voting user
+4	IceRinkSchedules	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	IceRinkSchedules	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	FanVotes	id	UUID		FALSE	TRUE		Unique ID
+4	FanVotes	user_id	UUID		FALSE	FALSE	Users	Title of voting round
+4	FanVotes	game_id	UUID		TRUE	FALSE	Games	Organization/team filing the protest
+4	FanVotes	poll_title	TEXT		FALSE	FALSE		Voting question
+4	FanVotes	question	TEXT		FALSE	FALSE		Selected player
+4	FanVotes	voted_player_id	UUID		TRUE	FALSE	Players	Selected team
+4	FanVotes	voted_team_id	UUID		TRUE	FALSE	Teams	Voting status
+4	FanVotes	status_id	UUID		FALSE	FALSE		Voting time
+4	FanVotes	created_at	TIMESTAMP		FALSE	FALSE		End of voting
+4	FanVotes	end_date	TIMESTAMP		TRUE	FALSE		Organization using the connection
+4	ExternalIntegrations	id	UUID		FALSE	TRUE		Unique ID
+4	ExternalIntegrations	organization_id	UUID		TRUE	FALSE	Organizations	Provider name
+4	ExternalIntegrations	provider_name	TEXT		FALSE	FALSE		Coupling type
+4	ExternalIntegrations	integration_type	TEXT		FALSE	FALSE		API keys and settings
+4	ExternalIntegrations	settings	JSONB		TRUE	FALSE		Connection status
+4	ExternalIntegrations	is_active	BOOLEAN		FALSE	FALSE		Ticket Buyer/Owner
+4	ExternalIntegrations	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	ExternalIntegrations	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Tickets	id	UUID		FALSE	TRUE		Unique ID
+4	Tickets	game_id	UUID		FALSE	FALSE	Games	Participating team
+4	Tickets	user_id	UUID		TRUE	FALSE	Users	Unique barcode/QR code string
+4	Tickets	ticket_code	TEXT		FALSE	FALSE		Section / row / seat number
+4	Tickets	seat_info	TEXT		TRUE	FALSE		Ticket price
+4	Tickets	price_amount	DECIMAL		TRUE	FALSE		Linked user
+4	Tickets	status	TEXT		FALSE	FALSE		Approver
+4	Tickets	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Tickets	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	UserProfiles	id	UUID		FALSE	TRUE		Unique ID
+4	UserProfiles	user_id	UUID		FALSE	FALSE	Users	Public username
+4	UserProfiles	username	TEXT		FALSE	FALSE		Profile description or text
+4	UserProfiles	bio	TEXT		TRUE	FALSE		Cover photo/banner
+4	UserProfiles	avatar_media_id	UUID		TRUE	FALSE	MediaFiles	Profile picture
+4	UserProfiles	cover_media_id	UUID		TRUE	FALSE	MediaFiles	Public/private profile
+4	UserProfiles	visibility	TEXT		FALSE	FALSE		Message containing mention
+4	UserProfiles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	UserProfiles	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Mentions	id	UUID		FALSE	TRUE		Unique ID
+4	Mentions	post_id	UUID		TRUE	FALSE	Posts	Response containing mention
+4	Mentions	comment_id	UUID		TRUE	FALSE	Comments	Type of goal
+4	Mentions	mentioned_entity_type	TEXT		FALSE	FALSE		ID target entity
+4	Mentions	mentioned_entity_id	UUID		FALSE	FALSE		Reporting user
+4	Mentions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Reports	id	UUID		FALSE	TRUE		Unique ID
+4	Reports	reporter_user_id	UUID		FALSE	FALSE	Users	Type of reported object
+4	Reports	target_entity_type	TEXT		FALSE	FALSE		ID reported object
+4	Reports	target_entity_id	UUID		FALSE	FALSE		Reason for report
+4	Reports	reason	TEXT		FALSE	FALSE		Additional explanation
+4	Reports	description	TEXT		TRUE	FALSE		Notification status
+4	Reports	status_id	UUID		FALSE	FALSE	ReportStatuses	Moderator
+4	Reports	handled_by	UUID		TRUE	FALSE	Users	Linked notification
+4	Reports	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Reports	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	ModerationActions	id	UUID		FALSE	TRUE		Unique ID
+4	ModerationActions	report_id	UUID		TRUE	FALSE	Reports	Executive moderator
+4	ModerationActions	moderator_user_id	UUID		FALSE	FALSE	Users	Action
+4	ModerationActions	action_type	TEXT		FALSE	FALSE		Explanation
+4	ModerationActions	notes	TEXT		TRUE	FALSE		Owner type
+4	ModerationActions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	MediaFiles	id	UUID		FALSE	TRUE		Unique ID
+4	MediaFiles	owner_entity_type	TEXT		TRUE	FALSE		ID owner
+4	MediaFiles	owner_entity_id	UUID		TRUE	FALSE		File type
+4	MediaFiles	file_type	TEXT		FALSE	FALSE		Storage location
+4	MediaFiles	file_url	TEXT		FALSE	FALSE		Internal storage location
+4	MediaFiles	storage_path	TEXT		TRUE	FALSE		File size
+4	MediaFiles	file_size	INTEGER		TRUE	FALSE		Entity type
+4	MediaFiles	metadata	JSONB		TRUE	FALSE		Additional information
+4	MediaFiles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	MediaFiles	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	EntityHistory	id	UUID		FALSE	TRUE		Unique ID
+4	EntityHistory	entity_type	TEXT		FALSE	FALSE		Entity ID
+4	EntityHistory	entity_id	UUID		FALSE	FALSE		Modified field
+4	EntityHistory	field_name	TEXT		FALSE	FALSE		Old value
+4	EntityHistory	old_value	JSONB		TRUE	FALSE		New value
+4	EntityHistory	new_value	JSONB		TRUE	FALSE		Start validity
+4	EntityHistory	valid_from	DATE		TRUE	FALSE		End of validity
+4	EntityHistory	valid_until	DATE		TRUE	FALSE		Who changed
+4	EntityHistory	changed_by	UUID		TRUE	FALSE	Users	Building/location
+4	EntityHistory	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Facilities	id	UUID		FALSE	TRUE		Unique ID
+4	Facilities	location_id	UUID		FALSE	FALSE	Locations	Type of facility
+4	Facilities	facility_type	TEXT		FALSE	FALSE		Facility name
+4	Facilities	name	TEXT		FALSE	FALSE		Capacity
+4	Facilities	capacity	INTEGER		TRUE	FALSE		Specifications
+4	Facilities	specifications	JSONB		TRUE	FALSE		Paired voting
+4	Facilities	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Facilities	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	VoteOptions	id	UUID		FALSE	TRUE		Unique ID
+4	VoteOptions	vote_id	UUID		FALSE	FALSE	FanVotes	Type of option
+4	VoteOptions	option_type	TEXT		FALSE	FALSE		Selected entity type
+4	VoteOptions	option_entity_type	TEXT		TRUE	FALSE		Selected entity
+4	VoteOptions	option_entity_id	UUID		TRUE	FALSE		Free option
+4	VoteOptions	option_text	TEXT		TRUE	FALSE		Linked entity
+4	VoteOptions	votes_count	INTEGER		TRUE	FALSE		Statistics based on
+4	VoteOptions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	CalendarEvents	id	UUID		FALSE	TRUE		Unique ID
+4	CalendarEvents	entity_type	TEXT		TRUE	FALSE		ID linked entity
+4	CalendarEvents	entity_id	UUID		TRUE	FALSE		Event title
+4	CalendarEvents	title	TEXT		FALSE	FALSE		Start time
+4	CalendarEvents	description	TEXT		TRUE	FALSE		Active/inactive
+4	CalendarEvents	start_time	TIMESTAMP		FALSE	FALSE		Location
+4	CalendarEvents	end_time	TIMESTAMP		FALSE	FALSE		Number of periods
+4	CalendarEvents	location_id	UUID		TRUE	FALSE	Locations	Created by
+4	CalendarEvents	created_by	UUID		TRUE	FALSE	Users	Product type
+4	CalendarEvents	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	CalendarEvents	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Products	id	UUID		FALSE	TRUE		Unique ID
+4	Products	equipment_type_id	UUID		TRUE	FALSE	EquipmentTypes	Seller organization
+4	Products	seller_organization_id	UUID		TRUE	FALSE	Organizations	Product name
+4	Products	name	TEXT		FALSE	FALSE		Price
+4	Products	description	TEXT		TRUE	FALSE		Description
+4	Products	price_amount	DECIMAL		TRUE	FALSE		Stock
+4	Products	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Products	stock_quantity	INTEGER		TRUE	FALSE		New/used
+4	Products	condition	TEXT		TRUE	FALSE		Product status
+4	Products	status_id	UUID		FALSE	FALSE		Seller type
+4	Products	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Products	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	MarketplaceListings	id	UUID		FALSE	TRUE		Unique ID
+4	MarketplaceListings	seller_entity_type	TEXT		FALSE	FALSE		Seller ID
+4	MarketplaceListings	seller_entity_id	UUID		FALSE	FALSE		Product
+4	MarketplaceListings	product_id	UUID		TRUE	FALSE	Products	Advertisement title
+4	MarketplaceListings	title	TEXT		FALSE	FALSE		Advertisement status
+4	MarketplaceListings	description	TEXT		TRUE	FALSE		Active/inactive
+4	MarketplaceListings	price_amount	DECIMAL		FALSE	FALSE		Stock
+4	MarketplaceListings	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	MarketplaceListings	status_id	UUID		FALSE	FALSE		Copper
+4	MarketplaceListings	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Orders	id	UUID		FALSE	TRUE		Unique ID
+4	Orders	buyer_user_id	UUID		FALSE	FALSE	Users	Seller
+4	Orders	seller_organization_id	UUID		TRUE	FALSE	Organizations	Total amount
+4	Orders	total_amount	DECIMAL		FALSE	FALSE		Order status
+4	Orders	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Orders	status_id	UUID		FALSE	FALSE		Order
+4	Orders	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Orders	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	OrderItems	id	UUID		FALSE	TRUE		Unique ID
+4	OrderItems	order_id	UUID		FALSE	FALSE	Orders	Number
+4	OrderItems	product_id	UUID		FALSE	FALSE	Products	Advertisement title
+4	OrderItems	quantity	INTEGER		FALSE	FALSE		Price at time of purchase
+4	OrderItems	price_amount	DECIMAL		FALSE	FALSE		Author
+4	OrderItems	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	NewsArticles	id	UUID		FALSE	TRUE		Unique ID
+4	NewsArticles	author_user_id	UUID		TRUE	FALSE	Users	Publishing organization
+4	NewsArticles	organization_id	UUID		TRUE	FALSE	Organizations	Title
+4	NewsArticles	title	TEXT		FALSE	FALSE		Summary
+4	NewsArticles	summary	TEXT		TRUE	FALSE		Contents
+4	NewsArticles	content	TEXT		FALSE	FALSE		Publication status
+4	NewsArticles	category	TEXT		TRUE	FALSE		Official competition
+4	NewsArticles	status_id	UUID		FALSE	FALSE		Source name
+4	NewsArticles	published_at	TIMESTAMP		TRUE	FALSE		Competitive phase
+4	NewsArticles	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	NewsArticles	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	NewsSources	id	UUID		FALSE	TRUE		Unique ID
+4	NewsSources	name	TEXT		FALSE	FALSE		URL source
+4	NewsSources	url	TEXT		TRUE	FALSE		API settings
+4	NewsSources	logo_media_id	UUID		TRUE	FALSE	MediaFiles	Logo
+4	NewsSources	api_settings	JSONB		TRUE	FALSE		Source
+4	NewsSources	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	NewsFeeds	id	UUID		FALSE	TRUE		Unique ID
+4	NewsFeeds	source_id	UUID		FALSE	FALSE	NewsSources	Feed type
+4	NewsFeeds	feed_type	TEXT		FALSE	FALSE		Configuration
+4	NewsFeeds	settings	JSONB		TRUE	FALSE		Asset type name
+4	NewsFeeds	is_active	BOOLEAN		FALSE	FALSE		Organization to which the group is linked
+4	NewsFeeds	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	AssetTypes	id	UUID		FALSE	TRUE		Unique ID
+4	AssetTypes	name	TEXT		FALSE	FALSE		Tradetype name
+4	AssetTypes	category	TEXT		FALSE	FALSE		Official competition
+4	AssetTypes	description	TEXT		TRUE	FALSE		Description
+4	AssetTypes	rules	JSONB		TRUE	FALSE		Name status
+4	AssetTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	AssetTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	AssetTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	TradeTypes	id	UUID		FALSE	TRUE		Unique ID
+4	TradeTypes	name	TEXT		FALSE	FALSE		ISO currency code
+4	TradeTypes	category	TEXT		FALSE	FALSE		Official competition
+4	TradeTypes	description	TEXT		TRUE	FALSE		Description
+4	TradeTypes	rules	JSONB		TRUE	FALSE		Name status
+4	TradeTypes	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	TradeTypes	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	TradeTypes	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	Currencies	id	UUID		FALSE	TRUE		Unique ID
+4	Currencies	code	TEXT		FALSE	FALSE		Currency name
+4	Currencies	name	TEXT		FALSE	FALSE		Symbol
+4	Currencies	symbol	TEXT		TRUE	FALSE		Number of decimal places
+4	Currencies	decimal_places	INTEGER		FALSE	FALSE		Exchange rate data
+4	Currencies	exchange_rates	JSONB		TRUE	FALSE		Subscription name
+4	Currencies	status_id	UUID		FALSE	FALSE		Manufacturer's name
+4	Currencies	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Currencies	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Currencies	deleted_at	TIMESTAMP		TRUE	FALSE		Soft delete
+4	SubscriptionPlans	id	UUID		FALSE	TRUE		Unique ID
+4	SubscriptionPlans	name	TEXT		FALSE	FALSE		Subscription type
+4	SubscriptionPlans	description	TEXT		TRUE	FALSE		Description
+4	SubscriptionPlans	plan_type	TEXT		FALSE	FALSE		Billing interval
+4	SubscriptionPlans	price_amount	DECIMAL		FALSE	FALSE		Stock
+4	SubscriptionPlans	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	SubscriptionPlans	billing_interval	TEXT		FALSE	FALSE		Included features
+4	SubscriptionPlans	features	JSONB		TRUE	FALSE		Max users
+4	SubscriptionPlans	max_users	INTEGER		TRUE	FALSE		Max teams
+4	SubscriptionPlans	max_teams	INTEGER		TRUE	FALSE		Organization subscription
+4	SubscriptionPlans	status_id	UUID		FALSE	FALSE		Manufacturer's name
+4	SubscriptionPlans	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	SubscriptionPlans	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	Subscriptions	id	UUID		FALSE	TRUE		Unique ID
+4	Subscriptions	organization_id	UUID		TRUE	FALSE	Organizations	Individual subscription
+4	Subscriptions	user_id	UUID		TRUE	FALSE	Users	Chosen plan
+4	Subscriptions	plan_id	UUID		FALSE	FALSE	SubscriptionPlans	Subscription status
+4	Subscriptions	start_date	DATE		FALSE	FALSE		Cap rules and exceptions
+4	Subscriptions	end_date	DATE		TRUE	FALSE		Competition for which institution applies
+4	Subscriptions	status_id	UUID		FALSE	FALSE		Automatic renewal
+4	Subscriptions	auto_renew	BOOLEAN		FALSE	FALSE		Next invoice date
+4	Subscriptions	next_billing_date	DATE		TRUE	FALSE		Payment method owner
+4	Subscriptions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Subscriptions	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	PaymentMethods	id	UUID		FALSE	TRUE		Unique ID
+4	PaymentMethods	user_id	UUID		TRUE	FALSE	Users	Organization owner
+4	PaymentMethods	organization_id	UUID		TRUE	FALSE	Organizations	Payment type
+4	PaymentMethods	type	TEXT		FALSE	FALSE		Payment provider
+4	PaymentMethods	provider	TEXT		TRUE	FALSE		External provider ID
+4	PaymentMethods	external_reference	TEXT		TRUE	FALSE		Last 4 digits
+4	PaymentMethods	last_four	TEXT		TRUE	FALSE		Expiration date
+4	PaymentMethods	expiry_date	DATE		TRUE	FALSE		Standard payment method
+4	PaymentMethods	is_default	BOOLEAN		FALSE	FALSE		User
+4	PaymentMethods	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Transactions	id	UUID		FALSE	TRUE		Unique ID
+4	Transactions	user_id	UUID		TRUE	FALSE	Users	Subscription
+4	Transactions	organization_id	UUID		TRUE	FALSE	Organizations	Training location
+4	Transactions	subscription_id	UUID		TRUE	FALSE	Subscriptions	Transaction type
+4	Transactions	order_id	UUID		TRUE	FALSE	Orders	Number
+4	Transactions	transaction_type	TEXT		FALSE	FALSE		Amount
+4	Transactions	amount	DECIMAL		FALSE	FALSE		Provider
+4	Transactions	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Transactions	payment_provider	TEXT		TRUE	FALSE		external payment ID
+4	Transactions	external_transaction_id	TEXT		TRUE	FALSE		Payment status
+4	Transactions	status_id	UUID		FALSE	FALSE		Processing date
+4	Transactions	processed_at	TIMESTAMP		TRUE	FALSE		Customer user
+4	Transactions	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Invoices	id	UUID		FALSE	TRUE		Unique ID
+4	Invoices	customer_user_id	UUID		TRUE	FALSE	Users	Client organization
+4	Invoices	customer_organization_id	UUID		TRUE	FALSE	Organizations	Invoice number
+4	Invoices	subscription_id	UUID		TRUE	FALSE	Subscriptions	Transaction type
+4	Invoices	invoice_number	TEXT		FALSE	FALSE		Invoice date
+4	Invoices	issue_date	DATE		FALSE	FALSE		Expiration date
+4	Invoices	due_date	DATE		TRUE	FALSE		Amount excluding tax
+4	Invoices	subtotal_amount	DECIMAL		FALSE	FALSE		Tax
+4	Invoices	tax_amount	DECIMAL		TRUE	FALSE		Invoice status
+4	Invoices	total_amount	DECIMAL		FALSE	FALSE		Order status
+4	Invoices	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	Invoices	status_id	UUID		FALSE	FALSE		Invoice document
+4	Invoices	pdf_media_id	UUID		TRUE	FALSE	MediaFiles	Invoice
+4	Invoices	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	InvoiceLines	id	UUID		FALSE	TRUE		Unique ID
+4	InvoiceLines	invoice_id	UUID		FALSE	FALSE	Invoices	Price per unit
+4	InvoiceLines	description	TEXT		FALSE	FALSE		Active/inactive
+4	InvoiceLines	quantity	INTEGER		FALSE	FALSE		Price at time of purchase
+4	InvoiceLines	unit_price	DECIMAL		FALSE	FALSE		Line amount
+4	InvoiceLines	total_amount	DECIMAL		FALSE	FALSE		Final status
+4	InvoiceLines	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	PaymentStatuses	id	UUID		FALSE	TRUE		Unique ID
+4	PaymentStatuses	name	TEXT		FALSE	FALSE		Indicates whether the match has ended
+4	PaymentStatuses	description	TEXT		TRUE	FALSE		Description
+4	PaymentStatuses	is_final	BOOLEAN		FALSE	FALSE		Owner's account
+4	PaymentStatuses	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	FinancialAccounts	id	UUID		FALSE	TRUE		Unique ID
+4	FinancialAccounts	organization_id	UUID		TRUE	FALSE	Organizations	Account type
+4	FinancialAccounts	account_type	TEXT		FALSE	FALSE		Account name
+4	FinancialAccounts	name	TEXT		FALSE	FALSE		Current balance
+4	FinancialAccounts	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	FinancialAccounts	balance	DECIMAL		TRUE	FALSE		Financial account
+4	FinancialAccounts	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	FinancialEntries	id	UUID		FALSE	TRUE		Unique ID
+4	FinancialEntries	account_id	UUID		FALSE	FALSE	FinancialAccounts	Linked transaction
+4	FinancialEntries	transaction_id	UUID		TRUE	FALSE	Transactions	Income, expenses
+4	FinancialEntries	entry_type	TEXT		FALSE	FALSE		Booking date
+4	FinancialEntries	amount	DECIMAL		FALSE	FALSE		Provider
+4	FinancialEntries	category	TEXT		TRUE	FALSE		Official competition
+4	FinancialEntries	description	TEXT		TRUE	FALSE		Active/inactive
+4	FinancialEntries	entry_date	DATE		FALSE	FALSE		Sponsor organization
+4	FinancialEntries	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Sponsors	id	UUID		FALSE	TRUE		Unique ID
+4	Sponsors	organization_id	UUID		FALSE	FALSE	Organizations	Type of sponsor
+4	Sponsors	sponsor_type	TEXT		TRUE	FALSE		Contact person
+4	Sponsors	contact_person_id	UUID		TRUE	FALSE	Persons	Collaboration status
+4	Sponsors	description	TEXT		TRUE	FALSE		Description
+4	Sponsors	status_id	UUID		FALSE	FALSE		Sponsor
+4	Sponsors	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	Sponsors	updated_at	TIMESTAMP		FALSE	FALSE		Last modified
+4	SponsorContracts	id	UUID		FALSE	TRUE		Unique ID
+4	SponsorContracts	sponsor_id	UUID		FALSE	FALSE	Sponsors	Sponsored organization
+4	SponsorContracts	organization_id	UUID		FALSE	FALSE	Organizations	Contract value
+4	SponsorContracts	start_date	DATE		FALSE	FALSE		Cap rules and exceptions
+4	SponsorContracts	end_date	DATE		TRUE	FALSE		Competition for which institution applies
+4	SponsorContracts	value_amount	DECIMAL		TRUE	FALSE		Contract status
+4	SponsorContracts	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	SponsorContracts	benefits	JSONB		TRUE	FALSE		Active, expired
+4	SponsorContracts	status_id	UUID		FALSE	FALSE		Receiving organization
+4	SponsorContracts	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	RevenueShares	id	UUID		FALSE	TRUE		Unique ID
+4	RevenueShares	organization_id	UUID		TRUE	FALSE	Organizations	Source (ticket, sponsor, marketplace)
+4	RevenueShares	source_type	TEXT		FALSE	FALSE		Source object
+4	RevenueShares	source_id	UUID		TRUE	FALSE		Share percentage
+4	RevenueShares	percentage	DECIMAL		FALSE	FALSE		
+4	RevenueShares	amount	DECIMAL		TRUE	FALSE		Provider
+4	RevenueShares	currency_id	UUID		TRUE	FALSE	Currencies	Per month, season, year
+4	RevenueShares	created_at	TIMESTAMP		FALSE	FALSE		Created
+4	player_game_projections	stat_id	UUID		FALSE	FALSE		The unique ID of the stat
+4	player_game_projections	team_id	UUID		TRUE	FALSE	Teams	The unique ID of the team
+4	player_game_projections	player_id	UUID		TRUE	FALSE	Players	The player's unique PlayerID
+4	player_game_projections	season_type	INTEGER		TRUE	FALSE		The type of season
+4	player_game_projections	season	INTEGER		TRUE	FALSE		The NHL season of the game
+4	player_game_projections	name	TEXT		TRUE	FALSE		The player's full name
+4	player_game_projections	team	TEXT		TRUE	FALSE		The abbreviation [Key] of the team
+4	player_game_projections	position	TEXT		TRUE	FALSE		The player's primary position.
+4	player_game_projections	fan_duel_salary	INTEGER		TRUE	FALSE		The player's salary for FanDuel
+4	player_game_projections	injury_status	TEXT		TRUE	FALSE		The player's current injury status
+4	player_game_projections	injury_body_part	TEXT		TRUE	FALSE		The body part that is injured
+4	player_game_projections	injury_start_date	DATE		TRUE	FALSE		The day that the injury started
+4	player_game_projections	injury_notes	TEXT		TRUE	FALSE		Brief description of the player's injury
+4	player_game_projections	global_team_id	UUID		TRUE	Teams		A globally unique ID for this team.
+4	player_game_projections	even_strength_minutes	INTEGER		TRUE	FALSE		Minutes played at even strength
+4	player_game_projections	even_strength_seconds	INTEGER		TRUE	FALSE		Seconds played at even strength
+4	player_game_projections	power_play_minutes	INTEGER		TRUE	FALSE		Minutes played on the power play
+4	player_game_projections	power_play_seconds	INTEGER		TRUE	FALSE		Seconds played on a Power Play
+4	player_game_projections	short_handed_minutes	INTEGER		TRUE	FALSE		Minutes played short handed
+4	player_game_projections	short_handed_seconds	INTEGER		TRUE	FALSE		Seconds played short handed
+4	player_game_projections	points	DECIMAL		TRUE	FALSE		Total points for the player
+4	player_game_projections	game_id	UUID		TRUE	FALSE	Games	The unique ID of this game
+4	player_game_projections	opponent_id	UUID		TRUE	Teams		The unique ID of the team's opponent
+4	player_game_projections	opponent	TEXT		TRUE	FALSE		The name of the opponent
+4	player_game_projections	day	DATE		TRUE	FALSE		The day of the game
+4	player_game_projections	date_time	TIMESTAMP		TRUE	FALSE		The date and time of the game
+4	player_game_projections	home_or_away	TEXT		TRUE	FALSE		Whether the team is home or away
+4	player_game_projections	is_game_over	BOOLEAN		FALSE	FALSE		Whether the game is over
+4	player_game_projections	global_game_id	UUID		TRUE	Games		A globally unique ID for this game.
+4	player_game_projections	global_opponent_id	UUID		TRUE	Teams		A globally unique ID for this opponent.
+4	player_game_projections	updated	TIMESTAMP		TRUE	FALSE		The timestamp of when the record was last updated
+4	player_game_projections	games	INTEGER		TRUE	FALSE		The number of games played.
+4	player_game_projections	minutes	INTEGER		TRUE	FALSE		Total number of minutes played
+4	player_game_projections	seconds	INTEGER		TRUE	FALSE		Total number of seconds played
+4	player_game_projections	goals	DECIMAL		TRUE	FALSE		Total number of goals scored
+4	player_game_projections	assists	DECIMAL		TRUE	FALSE		Total number of assists
+4	player_game_projections	shots_on_goal	DECIMAL		TRUE	FALSE		Total number of shots on goal
+4	player_game_projections	power_play_goals	DECIMAL		TRUE	FALSE		Total number of power play goals
+4	player_game_projections	short_handed_goals	DECIMAL		TRUE	FALSE		Total number of short handed goals
+4	player_game_projections	empty_net_goals	DECIMAL		TRUE	FALSE		Total number of empty net goals
+4	player_game_projections	power_play_assists	DECIMAL		TRUE	FALSE		Total number of power play assists
+4	player_game_projections	short_handed_assists	DECIMAL		TRUE	FALSE		Total number of short handed assists
+4	player_game_projections	hat_tricks	DECIMAL		TRUE	FALSE		Total number of hat tricks
+4	player_game_projections	shootout_goals	DECIMAL		TRUE	FALSE		Total number of shootout goals
+4	player_game_projections	plus_minus	DECIMAL		TRUE	FALSE		Total plus minus
+4	player_game_projections	penalty_minutes	DECIMAL		TRUE	FALSE		Total pentalty minutes
+4	player_game_projections	blocks	DECIMAL		TRUE	FALSE		Total blocked shots
+4	player_game_projections	hits	DECIMAL		TRUE	FALSE		Total hits
+4	player_game_projections	takeaways	DECIMAL		TRUE	FALSE		Total takeaways
+4	player_game_projections	giveaways	DECIMAL		TRUE	FALSE		Total giveaways
+4	player_game_projections	faceoffs_won	DECIMAL		TRUE	FALSE		Total faceoffs won
+4	player_game_projections	faceoffs_lost	DECIMAL		TRUE	FALSE		Total faceoffs lost
+4	player_game_projections	shifts	DECIMAL		TRUE	FALSE		Total shifts
+4	player_game_projections	goaltending_minutes	INTEGER		TRUE	FALSE		Total goaltending minutes
+4	player_game_projections	goaltending_seconds	INTEGER		TRUE	FALSE		Total goaltending seconds
+4	player_game_projections	goaltending_shots_against	DECIMAL		TRUE	FALSE		Total goaltending shots against
+4	player_game_projections	goaltending_goals_against	DECIMAL		TRUE	FALSE		Total goaltending goals against
+4	player_game_projections	goaltending_saves	DECIMAL		TRUE	FALSE		Total goaltending saves
+4	player_game_projections	goaltending_wins	DECIMAL		TRUE	FALSE		Total goaltending wins
+4	player_game_projections	goaltending_losses	DECIMAL		TRUE	FALSE		Total goaltendings losses
+4	dfs_slates	slate_id	UUID		FALSE	TRUE		Unique ID of a Slate
+4	dfs_slates	operator	TEXT		TRUE	FALSE		The name of the operator who is running contests
+4	dfs_slates	operator_slate_id	UUID		TRUE	FALSE		The unique ID of a slate as assigned by the operator
+4	dfs_slates	operator_name	TEXT		TRUE	FALSE		The name of the slate
+4	dfs_slates	operator_day	DATE		TRUE	FALSE		The day (in EST/EDT) that the slate begins
+4	dfs_slates	operator_start_time	TIMESTAMP		TRUE	FALSE		The date & time that the slate begins
+4	dfs_slates	number_of_games	INTEGER		TRUE	FALSE		The number of actual games that this slate covers
+4	dfs_slates	is_multi_day_slate	BOOLEAN		TRUE	FALSE		Whether this slate uses games that take place on different days
+4	dfs_slates	removed_by_operator	BOOLEAN		TRUE	FALSE		Indicates whether this slate was removed/deleted
+4	dfs_slates	operator_game_type	TEXT		TRUE	FALSE		The game type of the slate.
+4	dfs_slates	dfs_slate_games	JSONB		TRUE	FALSE		The games that are included in this slate
+4	dfs_slates	dfs_slate_players	JSONB		TRUE	FALSE		The players that are included in this slate
+4	dfs_slates	slate_roster_slots	JSONB		TRUE	FALSE		The positions that need to be filled for this particular slate
+4	dfs_slates	salary_cap	INTEGER		TRUE	FALSE		The salary cap for the current slate
+4	dfs_slate_games	slate_game_id	UUID		FALSE	TRUE		Unique ID of a SlateGame
+4	dfs_slate_games	slate_id	UUID		FALSE	FALSE	dfs_slates	The SlateID that this SlateGame refers to.
+4	dfs_slate_games	game_id	UUID		TRUE	FALSE	Games	The unique ID of the game
+4	dfs_slate_games	game	JSONB		TRUE	FALSE		The details of the game
+4	dfs_slate_games	operator_game_id	UUID		TRUE	FALSE		The unique ID of a SlateGame as assigned by the operator
+4	dfs_slate_games	removed_by_operator	BOOLEAN		TRUE	FALSE		Indicates whether this slate was removed/deleted
+4	dfs_slate_players	slate_player_id	UUID		FALSE	TRUE		Unique ID of a SlatePlayer
+4	dfs_slate_players	slate_id	UUID		FALSE	FALSE	dfs_slates	The SlateID that this SlatePlayer refers to.
+4	dfs_slate_players	slate_game_id	UUID		TRUE	FALSE	dfs_slate_games	The SlateGameID that this SlatePlayer refers to.
+4	dfs_slate_players	player_id	UUID		TRUE	FALSE	Players	The player's unique PlayerID
+4	dfs_slate_players	player_game_projection_stat_id	UUID		TRUE	FALSE	player_game_projections	The SportsDataIO StatID that this SlatePlayer refers to.
+4	dfs_slate_players	operator_player_id	UUID		TRUE	FALSE		The unique ID of the player as assigned by the operator
+4	dfs_slate_players	operator_slate_player_id	UUID		TRUE	FALSE		The unique ID of the SlatePlayer as assigned by the operator
+4	dfs_slate_players	operator_player_name	TEXT		TRUE	FALSE		The player's name as assigned by the operator
+4	dfs_slate_players	operator_position	TEXT		TRUE	FALSE		The player's eligible positions for the contest
+4	dfs_slate_players	operator_salary	INTEGER		TRUE	FALSE		The player's salary for the contest
+4	dfs_slate_players	operator_roster_slots	JSONB		TRUE	FALSE		The player's eligible positions to be played
+4	dfs_slate_players	removed_by_operator	BOOLEAN		TRUE	FALSE		Indicates whether this slate was removed/deleted
+4	dfs_slate_players	team	TEXT		TRUE	FALSE		The team the player plays for
+4	dfs_slate_players	team_id	UUID		TRUE	FALSE	Teams	The unique ID of the team
+4	game_odd_results	odd_type	TEXT		TRUE	FALSE		The market type of the odd
+4	team_trends	team	TEXT		TRUE	FALSE		The abbreviation [Key] of the team
+4	team_trends	team_id	UUID		TRUE	FALSE	Teams	The unique ID of the team
+4	team_trends	upcoming_game	JSONB		TRUE	FALSE		Upcoming game for this team
+4	team_trends	team_game_trends	JSONB		TRUE	FALSE		The collection of Game Trends for this team
+4	matchup_trends	upcoming_game	JSONB		TRUE	FALSE		Upcoming game between the team and the opponent
+4	matchup_trends	team_trends	JSONB		TRUE	FALSE		The collection of team trends between each team
+4	matchup_trends	team_matchup_trends	JSONB		TRUE	FALSE		The collection of team game trends against opponent
+4	matchup_trends	opponent_matchup_trends	JSONB		TRUE	FALSE		The collection of opponent game trends against a specific team
+4	matchup_trends	previous_games	JSONB		TRUE	FALSE		The collection of last 10 game scores between each team
+
+1. Organisatie
+Platform
+│
+├── Land
+│
+├── Bond
+│
+├── Competitie
+│   ├── Seizoen
+│   │   ├── Divisie
+│   │   │   ├── Subdivisie
+│   │   │   │   ├── Poule
+│   │   │   │   │   ├── Speelschema
+│   │   │   │   │   ├── Stand
+│   │   │   │   │   └── Wedstrijden
+
+Relaties
+
+Competitie
+    ↓
+Seizoenen
+    ↓
+Divisies
+    ↓
+Subdivisies
+    ↓
+Poules
+    ↓
+Wedstrijden
+2. Verenigingen
+Vereniging
+│
+├── Locaties
+├── IJshallen
+├── Teams
+├── Leden
+├── Trainers
+├── Bestuur
+├── Vrijwilligers
+├── Sponsors
+├── Social pagina
+├── Club nieuws
+├── Club statistieken
+└── Club historie
+
+Relaties
+
+Vereniging
+    ↓
+Teams
+    ↓
+Spelers
+3. Teams
+
+Een team bestaat uit veel meer dan alleen spelers.
+
+Team
+
+Naam
+
+Logo
+
+Categorie
+
+Leeftijd
+
+Competitie
+
+Vereniging
+
+Rolverdeling
+
+Captain
+
+Assistant Captain
+
+Coach
+
+Assistant Coach
+
+Goalie coach
+
+Manager
+
+Data manager
+
+Medic
+
+Materiaalbeheerder
+
+Statistieken
+
+Historie
+
+Social feed
+
+Sponsors
+
+Agenda
+
+Trainingen
+
+Wedstrijden
+
+Teamfoto's
+
+Media
+
+Relaties
+
+Team
+├── Spelers
+├── Coaches
+├── Wedstrijden
+├── Statistieken
+├── Equipment
+├── Trainingen
+├── Social
+4. Persoon (centrale tabel)
+
+Dit wordt waarschijnlijk de belangrijkste tabel.
+
+Persoon
+
+Naam
+
+Voornaam
+
+Achternaam
+
+Geslacht
+
+Geboortedatum
+
+Nationaliteit
+
+Pasfoto
+
+Contactgegevens
+
+Social media
+
+Adres
+
+Licentie
+
+Relaties
+
+Vanuit Persoon kunnen verschillende rollen ontstaan.
+
+Persoon
+
+↓
+
+Speler
+
+↓
+
+Coach
+
+↓
+
+Scheidsrechter
+
+↓
+
+Data manager
+
+↓
+
+Bestuurder
+
+↓
+
+Supporter
+
+↓
+
+Gebruiker
+
+Dus:
+
+Iedere speler IS een persoon.
+
+5. Gebruikers
+Gebruiker
+
+Login
+
+Email
+
+Telefoon
+
+Authenticatie
+
+2FA
+
+API sleutel
+
+Voorkeuren
+
+Meldingen
+
+Privacy
+
+Rollen
+
+Rechten
+
+Favorieten
+
+Relaties
+
+Gebruiker
+
+↓
+
+Persoon
+
+↓
+
+Speler
+
+↓
+
+Coach
+6. Rollen & Rechten
+Super Admin
+
+Platform Admin
+
+Bond
+
+Competitiebeheer
+
+Verenigingbeheer
+
+Teammanager
+
+Coach
+
+Data Manager
+
+Scheidsrechter
+
+Speler
+
+Supporter
+
+Scout
+
+Gast
+
+Met honderden losse permissies.
+
+Bijvoorbeeld
+
+Mag speler wijzigen
+
+Mag wedstrijd starten
+
+Mag statistieken aanpassen
+
+Mag team verwijderen
+
+Mag livestream starten
+
+Mag equipment wijzigen
+
+Mag transfers doen
+
+etc.
+7. Spelers
+Speler
+
+Persoonsgegevens
+
+Jersey nummer
+
+Positie
+
+Shoots
+
+Stick hand
+
+Lengte
+
+Gewicht
+
+Leeftijd
+
+Nationaliteit
+
+Huidige vereniging
+
+Vorige verenigingen
+
+Contract
+
+Transfers
+
+Blessures
+
+Medisch
+
+Statistieken
+
+Achievements
+
+Badges
+
+Awards
+
+Foto's
+
+Video's
+
+Equipment
+
+Social
+
+Volgers
+
+Relaties
+
+Speler
+
+↓
+
+Team
+
+↓
+
+Wedstrijd
+
+↓
+
+Statistieken
+8. Equipment
+Equipment
+
+Categorie
+
+Merk
+
+Serie
+
+Model
+
+Kleur
+
+Gewicht
+
+Specificaties
+
+Afbeeldingen
+
+Handleiding
+
+EAN
+
+Leverancier
+
+Onder equipment
+
+Stick
+
+Skates
+
+Helmet
+
+Gloves
+
+Pants
+
+Shoulders
+
+Elbows
+
+Shin guards
+
+Visor
+
+Tape
+
+Laces
+
+Mouthguard
+
+Neckguard
+
+Bag
+
+Accessories
+
+Stick
+
+Merk
+
+Serie
+
+Model
+
+Curve
+
+Flex
+
+Kickpoint
+
+Carbon
+
+Gewicht
+
+Grip
+
+Afwerking
+
+Prijs
+
+Review
+
+Beschikbaarheid
+
+Relaties
+
+Speler
+
+↓
+
+Gebruikt
+
+↓
+
+Stick
+9. Merken
+Brand
+
+Naam
+
+Logo
+
+Website
+
+Land
+
+Distributeurs
+
+Social
+
+Geschiedenis
+
+Bijvoorbeeld
+
+Bauer
+
+CCM
+
+Warrior
+
+Sherwood
+
+True
+
+Blackout
+
+10. Wedstrijden
+Wedstrijd
+
+Datum
+
+Tijd
+
+IJshal
+
+Status
+
+Competitie
+
+Divisie
+
+Scheidsrechters
+
+Officials
+
+Thuisteam
+
+Uitteam
+
+Score
+
+Penalty's
+
+Shootout
+
+Overtime
+
+Livestream
+
+Commentaar
+
+Wedstrijdrapport
+11. Live registratie
+
+Hier gebeurt alle magie.
+
+Game Clock
+
+Puck drop
+
+Goal
+
+Assist
+
+Penalty
+
+Hit
+
+Shot
+
+Shot on Goal
+
+Save
+
+Block
+
+Miss
+
+Takeaway
+
+Giveaway
+
+Faceoff
+
+Timeout
+
+Challenge
+
+Goalie change
+
+Injury
+
+Powerplay
+
+Penalty kill
+
+Empty net
+
+Shootout
+
+Iedere actie wordt opgeslagen.
+
+12. Event Engine
+
+Alles wordt een event.
+
+Goal
+
+↓
+
+Update score
+
+↓
+
+Update spelerstats
+
+↓
+
+Update teamstats
+
+↓
+
+Update competitie
+
+↓
+
+Update standen
+
+↓
+
+Update live feed
+
+↓
+
+Push notificatie
+
+↓
+
+Social post
+
+↓
+
+Historie
+
+Dat is eigenlijk het hart van het systeem.
+
+13. Statistieken
+
+Op meerdere niveaus.
+
+Platform
+
+↓
+
+Competitie
+
+↓
+
+Divisie
+
+↓
+
+Vereniging
+
+↓
+
+Team
+
+↓
+
+Speler
+
+↓
+
+Wedstrijd
+
+Bij spelers
+
+Goals
+
+Assists
+
+Points
+
+PIM
+
+Shots
+
+Hits
+
+Blocks
+
+Faceoff %
+
+TOI
+
+Plus Minus
+
+Expected Goals
+
+Corsi
+
+Fenwick
+
+PDO
+
+xGF
+
+xGA
+
+etc.
+14. Standen
+Punten
+
+W
+
+L
+
+OTL
+
+GF
+
+GA
+
+GD
+
+PP%
+
+PK%
+
+Streak
+
+Form
+15. Social
+
+Iedere entiteit heeft zijn eigen social feed.
+
+Platform
+
+↓
+
+Competitie
+
+↓
+
+Vereniging
+
+↓
+
+Team
+
+↓
+
+Speler
+
+Iedere feed ondersteunt
+
+Posts
+
+Reels
+
+Foto's
+
+Stories
+
+Live
+
+Video
+
+Wedstrijd updates
+
+Reacties
+
+Likes
+
+Mentions
+
+Tags
+
+Hashtags
+
+Polls
+
+Events
+16. Media
+Foto
+
+Video
+
+Livestream
+
+PDF
+
+Handleiding
+
+Highlight
+
+Interview
+
+Podcast
+
+Iedere mediafile kan gekoppeld zijn aan:
+
+Speler
+
+Team
+
+Wedstrijd
+
+Club
+
+Equipment
+
+Merk
+17. Nieuws
+Platform nieuws
+
+Competitie nieuws
+
+Club nieuws
+
+Team nieuws
+
+Persberichten
+
+Transfers
+
+Blessures
+
+Wedstrijdverslagen
+
+Interviews
+18. Scouting
+Scout rapport
+
+Talent score
+
+Potentie
+
+Skating
+
+Passing
+
+Shot
+
+Hockey IQ
+
+Character
+
+Physical
+
+Development
+19. Training
+Training
+
+Oefeningen
+
+Aanwezigheid
+
+Load
+
+Hartslag
+
+GPS
+
+Coach notities
+
+Video analyse
+20. Analytics
+Heatmaps
+
+Shot maps
+
+Passing maps
+
+Expected Goals
+
+Faceoff locaties
+
+Puck possession
+
+Momentum
+
+Game flow
+
+Line chemistry
+
+Player impact
+21. Communicatie
+Chat
+
+DM
+
+Teamchat
+
+Clubchat
+
+Coachchat
+
+Announcements
+
+Push notificaties
+
+Email
+
+SMS
+
+23. Audit & Logging
+
+Alles wordt gelogd.
+
+Wie
+
+Wanneer
+
+Wat
+
+Waarom
+
+Vorige waarde
+
+Nieuwe waarde
+
+IP
+
+Device
+24. AI
+AI Coach
+
+AI Scout
+
+AI Statistieken
+
+AI Samenvattingen
+
+AI Highlights
+
+AI Voorspellingen
+
+AI Trainingsadvies
+
+AI Blessurerisico
+
+AI Equipment aanbevelingen
+25. Overkoepelende architectuur (Single Source of Truth)
+
+
+Persoon
+├── Gebruiker
+├── Speler
+├── Coach
+├── Scheidsrechter
+├── Vrijwilliger
+└── Bestuurder
+
+Vereniging
+├── Teams
+├── Locaties
+├── Leden
+└── Sponsors
+
+Competitie
+├── Seizoenen
+├── Divisies
+├── Poules
+├── Standen
+└── Wedstrijden
+
+Wedstrijd
+├── Live Events
+├── Scores
+├── Statistieken
+├── Officials
+└── Media
+
+Equipment
+├── Merk
+├── Model
+├── Specificaties
+└── Gebruikt door spelers
+
+Media
+├── Foto
+├── Video
+├── Livestream
+└── Document
+
+Social
+├── Posts
+├── Reacties
+├── Likes
+├── Meldingen
+└── Activiteiten
+
+ACHIEVEMENTS, ACTIVITIES, ANNOUNCEMENTS, ASSOCIATIONS, BOARD_MEMBERS, CALENDAR_EVENTS, COACHES, CONFERENCES, DIVISIONS, GAME_EVENTS, GAME_RESULTS, GAME_SETTINGS, HOCKEY_STICKS, INVENTORY, LEAGUES, LOCATIONS, MEDIA_ASSETS, NOTIFICATIONS, OFFICIALS, PERSONS, PLAYERS, POOLS, ROSTERS, RSVP, RULE_SETS, SALARY_CAP, SEASONS, SEASON_TEAMS, SKILLS_EVENT, SKILLS_RESULTS, SOCIAL_COMMENTS, SOCIAL_LIKES, SOCIAL_POSTS, SPONSORS, STANDINGS, STATS, SUB_DIVISIONS, TEAMS, TEAM_STAFF, TOURNAMENTS, TOURNAMENT_PLAYERS, TOURNAMENT_TEAMS, USERS, VOLUNTEERS.
+
+ERS, VOLUNTEERS.
+
+VOLUNTEERS
