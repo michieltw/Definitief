@@ -16,14 +16,30 @@ type DivisieId = `DIV_${string}`;
 type OrgId = `ORG_${string}`;
 type UserId = `USR_${string}`;
 
-type PositionCode = "LW" | "RW" | "C" | "LD" | "RD" | "G";
-type EventCode = "GOAL" | "ASSIST" | "TRIP" | "HOOK" | "FIGHT" | "SHOT" | "SAVE" | "HIT" | "BLOCK" | "FACEOFF_WON";
-type MatchStatusCode = "SCHEDULED" | "WARMUP" | "PERIOD_1" | "INTERMISSION_1" | "PERIOD_2" | "INTERMISSION_2" | "PERIOD_3" | "OT" | "SO" | "FINAL" | "CLOSED";
-type ContractStatusCode = "ACTIVE" | "EXPIRED" | "TERMINATED";
-type TransactionStatusCode = "PENDING" | "COMPLETED" | "FAILED";
-type InjuryStatusCode = "ACTIVE" | "RECOVERED" | "DAY_TO_DAY";
-type RosterStatus = "ACTIVE" | "INACTIVE" | "SCRATCHED" | "INJURED";
-type PostTypeCode = "NEWS" | "UPDATE" | "ANNOUNCEMENT" | "RESULT" | "MEDIA";
+// GEEN hardcoded strings meer! Gebruik generieke strings die in de app gevalideerd worden door CONFIG.
+type PositionCode = string;
+type EventCode = string;
+type MatchStatusCode = string;
+type ContractStatusCode = string;
+type TransactionStatusCode = string;
+type InjuryStatusCode = string;
+type RosterStatus = string;
+type PostTypeCode = string;
+type RoleCode = string;
+type TeamCategoryCode = string;
+type ShootsCode = string;
+type OrgTypeCode = string;
+type CompTypeCode = string;
+type LineupRoleCode = string;
+type OfficialRoleCode = string;
+type RsvpStatusCode = string;
+type SuspensionStatusCode = string;
+type ListingStatusCode = string;
+type ConditionCode = string;
+type AttendanceStatusCode = string;
+type SubscriptionStatusCode = string;
+type ChannelTypeCode = string;
+type TransferStatusCode = string;
 ```
 
 ---
@@ -59,7 +75,7 @@ interface UserProfileDocument {
   authUserId: string; // Firebase Auth ID
   username: string;
   email: string;
-  roleCode: "SUPER_ADMIN" | "PLATFORM_ADMIN" | "TEAM_MANAGER" | "COACH" | "PLAYER" | "FAN";
+  roleCode: RoleCode;
   preferences: {
     notificationsEnabled: boolean;
     language: string;
@@ -79,7 +95,7 @@ Inclusief geneste arrays voor randzaken zoals uitrusting, contracten en medische
 interface PlayerProfileDocument {
   personId: string;
   primaryPositionCode: PositionCode;
-  shootsCode: "L" | "R";
+  shootsCode: ShootsCode;
   jerseyNumber: number;
   physical: {
     heightCm: number;
@@ -115,7 +131,7 @@ interface PlayerProfileDocument {
     reason: string;
     startDate: string;
     endDate: string;
-    statusCode: "ONGOING" | "COMPLETED" | "APPEAL";
+    statusCode: SuspensionStatusCode;
   }>;
 }
 ```
@@ -129,7 +145,7 @@ Bevat sponsoren, financiële accounts en personeel als geneste domeinen.
 ```typescript
 interface OrganizationProfileDocument {
   name: string;
-  orgTypeCode: "FEDERATION" | "CLUB" | "SPONSOR" | "BRAND";
+  orgTypeCode: OrgTypeCode;
   foundedDate: string;
   logoUrl: string;
   sponsorships: Array<{ // Geneste sponsors
@@ -152,7 +168,7 @@ interface TeamProfileDocument {
   orgId: OrgId;
   name: string;
   logoUrl: string;
-  categoryCode: "SENIOR" | "U18" | "U16" | "WOMEN";
+  categoryCode: TeamCategoryCode;
   homeLocationId: string;
   teamSettings: Record<string, any>;
 }
@@ -193,7 +209,7 @@ interface SeasonStructureDocument {
 ```typescript
 interface CompetitionProfileDocument {
   name: string;
-  compTypeCode: "LEAGUE" | "TOURNAMENT" | "CUP";
+  compTypeCode: CompTypeCode;
   genderTypeCode: string;
   ageCategoryCode: string;
   rulesetCode: string;
@@ -234,12 +250,12 @@ Vóór de wedstrijd kunnen spelers/coaches hun aanwezigheid doorgeven.
 interface MatchRsvpDocument {
   homeTeamRsvp: Array<{
     playerId: PlayerId;
-    rsvpStatusCode: "ATTENDING" | "NOT_ATTENDING" | "TENTATIVE";
+    rsvpStatusCode: RsvpStatusCode;
     notes?: string;
   }>;
   awayTeamRsvp: Array<{
     playerId: PlayerId;
-    rsvpStatusCode: "ATTENDING" | "NOT_ATTENDING" | "TENTATIVE";
+    rsvpStatusCode: RsvpStatusCode;
     notes?: string;
   }>;
 }
@@ -255,17 +271,17 @@ interface MatchRosterDocument {
     playerId: PlayerId;
     jerseyNumber: number;
     positionCode: PositionCode;
-    lineupRoleCode: "STARTER" | "BENCH" | "SCRATCH";
+    lineupRoleCode: LineupRoleCode;
   }>;
   rosterAway: Array<{
     playerId: PlayerId;
     jerseyNumber: number;
     positionCode: PositionCode;
-    lineupRoleCode: string;
+    lineupRoleCode: LineupRoleCode;
   }>;
   officials: Array<{
     officialId: string;
-    roleCode: "REFEREE" | "LINESMAN";
+    roleCode: OfficialRoleCode;
   }>;
 }
 ```
@@ -403,7 +419,7 @@ interface SocialFeedDocument {
 Beperkt aantal berichten per document, chat is vaak snel muterend.
 ```typescript
 interface ChatChannelDocument {
-  channelTypeCode: "TEAM" | "CLUB" | "COACHES";
+  channelTypeCode: ChannelTypeCode;
   participants: UserId[];
   messages: Array<{
     messageId: string;
@@ -444,7 +460,7 @@ interface FinanceLedgerDocument {
 ```typescript
 interface SubscriptionDocument {
   planCode: string;
-  statusCode: "ACTIVE" | "CANCELED" | "PAST_DUE";
+  statusCode: SubscriptionStatusCode;
   startDate: string;
   endDate: string;
   autoRenew: boolean;
@@ -466,7 +482,7 @@ interface TeamTrainingLogDocument {
     title: string;
     attendance: Array<{ // Geneste aanwezigheidslijst
       playerId: PlayerId;
-      attendanceStatusCode: "PRESENT" | "ABSENT" | "INJURED";
+      attendanceStatusCode: AttendanceStatusCode;
       effortRating?: number;
     }>;
   }>;
@@ -484,7 +500,7 @@ interface SeasonTransfersDocument {
     toTeamId: TeamId;
     transferFee: number;
     effectiveDate: string;
-    statusCode: "COMPLETED" | "PENDING";
+    statusCode: TransferStatusCode;
   }>;
 }
 ```
@@ -520,8 +536,8 @@ interface MarketplaceListingsDocument {
     description: string;
     priceAmount: number;
     currencyCode: string;
-    conditionCode: "NEW" | "USED";
-    listingStatusCode: "ACTIVE" | "SOLD" | "REMOVED";
+    conditionCode: ConditionCode;
+    listingStatusCode: ListingStatusCode;
   }>;
 }
 ```
