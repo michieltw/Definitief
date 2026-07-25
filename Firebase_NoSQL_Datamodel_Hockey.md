@@ -109,6 +109,14 @@ interface PlayerProfileDocument {
     occurredDate: string;
     expectedReturn: string;
   }>;
+  suspensions: Array<{ // Schorsingen en disciplinaire statussen
+    matchId?: string;
+    suspensionGames: number;
+    reason: string;
+    startDate: string;
+    endDate: string;
+    statusCode: "ONGOING" | "COMPLETED" | "APPEAL";
+  }>;
 }
 ```
 
@@ -168,6 +176,19 @@ interface LocationProfileDocument {
 
 ## 4. Competities & Seizoenen
 
+### Document: `season:[SEIZOEN_ID]:structure`
+Voor een O(1) opstart-read van de app-navigatie (divisies en bijbehorende teams per seizoen).
+```typescript
+interface SeasonStructureDocument {
+  competitionId: string;
+  divisions: Array<{
+    divisieId: DivisieId;
+    name: string;
+    teamIds: TeamId[];
+  }>;
+}
+```
+
 ### Document: `competition:[COMP_ID]:profile`
 ```typescript
 interface CompetitionProfileDocument {
@@ -204,6 +225,23 @@ interface MatchInfoDocument {
   scoreAway: number;
   period: number;
   gameClock: string;
+}
+```
+
+### Document: `match:[WEDSTRIJD_ID]:rsvp`
+Vóór de wedstrijd kunnen spelers/coaches hun aanwezigheid doorgeven.
+```typescript
+interface MatchRsvpDocument {
+  homeTeamRsvp: Array<{
+    playerId: PlayerId;
+    rsvpStatusCode: "ATTENDING" | "NOT_ATTENDING" | "TENTATIVE";
+    notes?: string;
+  }>;
+  awayTeamRsvp: Array<{
+    playerId: PlayerId;
+    rsvpStatusCode: "ATTENDING" | "NOT_ATTENDING" | "TENTATIVE";
+    notes?: string;
+  }>;
 }
 ```
 
@@ -285,7 +323,8 @@ interface StandingsDocument {
 }
 ```
 
-### Document: `stats:[SEIZOEN_ID]:[TEAM_ID]:[SPELER_ID]` (Skater)
+### Document: `stats:[SEIZOEN_ID]:[TEAM_ID]:[SPELER_ID]` (Speler Statistieken)
+Voor zowel veldspelers als goalies identiek gehouden. Keeperspecifieke statistieken leven in het optionele veld `goalieStats`.
 ```typescript
 interface PlayerStatsDocument {
   gamesPlayed: number;
@@ -300,22 +339,17 @@ interface PlayerStatsDocument {
   faceoffsWon: number;
   faceoffsTaken: number;
   timeOnIceSeconds: number; // TOI
-}
-```
-
-### Document: `stats:[SEIZOEN_ID]:[TEAM_ID]:goalie:[SPELER_ID]` (Goalie)
-```typescript
-interface GoalieStatsDocument {
-  gamesPlayed: number;
-  minutesPlayed: number;
-  shotsAgainst: number;
-  saves: number;
-  goalsAgainst: number;
-  savePercentage: number;
-  gaa: number; // Goals Against Average
-  shutouts: number;
-  wins: number;
-  losses: number;
+  goalieStats?: { // Optioneel veld, uitsluitend gevuld voor keepers
+    minutesPlayed: number;
+    shotsAgainst: number;
+    saves: number;
+    goalsAgainst: number;
+    savePercentage: number;
+    gaa: number; // Goals Against Average
+    shutouts: number;
+    wins: number;
+    losses: number;
+  };
 }
 ```
 
