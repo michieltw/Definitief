@@ -1,0 +1,179 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------------------
+    // HELPER FUNCTIONS
+    // -------------------------------------------------------------------------
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && request.auth.token.role == role;
+    }
+
+    function hasAnyRole(roles) {
+      return isAuthenticated() && (request.auth.token.role in roles);
+    }
+
+    function isSuperAdmin() {
+      return hasRole('SUPER_ADMIN');
+    }
+
+    function isPlatformAdmin() {
+      return hasRole('PLATFORM_ADMIN');
+    }
+
+    function isAdmin() {
+      return isSuperAdmin() || isPlatformAdmin();
+    }
+
+    // Fixed vulnerability: Only allow write if existing data belongs to user
+    // or if the document is brand new and the new data belongs to user.
+    function isOwner(existingData, newData) {
+      return (existingData == null && newData != null && newData.authUserId == request.auth.uid) ||
+             (existingData != null && existingData.authUserId == request.auth.uid);
+    }
+
+    // -------------------------------------------------------------------------
+    // DEFAULT DENY
+    // -------------------------------------------------------------------------
+    // Strictly block ALL access to undefined collections.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // PUBLIC READ CORE DATA & PRE-CALCULATED STATS
+    // -------------------------------------------------------------------------
+
+    match /stand/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /stats/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /competition/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /season/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /team/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /player/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /organization/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /location/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /transfers/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /dfs/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // MATCH COLLECTION (SPLIT LOGIC BASED ON DOCUMENT SUFFIX)
+    // -------------------------------------------------------------------------
+    match /match/{docId} {
+      // PUBLIC READ for info, roster, events, report
+      // RESTRICTED READ for rsvp
+      allow read: if !docId.matches('.*:rsvp$') ||
+                     (docId.matches('.*:rsvp$') && hasAnyRole(['PLAYER', 'COACH', 'TEAM_MANAGER', 'SUPER_ADMIN', 'PLATFORM_ADMIN']));
+
+      // RESTRICTED WRITES
+      // events: SCOREKEEPER, COACH, ADMIN
+      // rsvp: PLAYER, COACH, TEAM_MANAGER, ADMIN
+      // others (info, roster, report): ADMIN (typically backend)
+      allow write: if
+        (docId.matches('.*:events$') && hasAnyRole(['SCOREKEEPER', 'COACH', 'SUPER_ADMIN', 'PLATFORM_ADMIN'])) ||
+        (docId.matches('.*:rsvp$') && hasAnyRole(['PLAYER', 'COACH', 'TEAM_MANAGER', 'SUPER_ADMIN', 'PLATFORM_ADMIN'])) ||
+        (!docId.matches('.*:events$') && !docId.matches('.*:rsvp$') && isAdmin());
+    }
+
+    // -------------------------------------------------------------------------
+    // SOCIAL, CHAT & MARKETPLACE (USER INTERACTIONS)
+    // -------------------------------------------------------------------------
+
+    match /social/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /marketplace/{docId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    match /chat/{docId} {
+      // Chat is typically restricted to members, but based on constraints we ensure users are at least authenticated
+      allow read, write: if isAuthenticated();
+    }
+
+    // -------------------------------------------------------------------------
+    // RESTRICTED / LOCKED COLLECTIONS
+    // -------------------------------------------------------------------------
+
+    // /user and /person
+    // Read/Write only by the account owner or SUPER_ADMIN
+    match /user/{docId} {
+      allow read, write: if isSuperAdmin() || (isAuthenticated() && (
+        docId == request.auth.uid ||
+        docId == 'user:' + request.auth.uid + ':profile' ||
+        isOwner(resource == null ? null : resource.data, request.resource == null ? null : request.resource.data)
+      ));
+    }
+
+    match /person/{docId} {
+      allow read, write: if isSuperAdmin() || (isAuthenticated() && (
+        docId == request.auth.uid ||
+        docId == 'person:' + request.auth.uid ||
+        isOwner(resource == null ? null : resource.data, request.resource == null ? null : request.resource.data)
+      ));
+    }
+
+    // /finance and /subscription
+    // Read/Write strictly for PLATFORM_ADMIN and SUPER_ADMIN
+    match /finance/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /subscription/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // /training
+    // Read/Write for team members (PLAYER, COACH, TEAM_MANAGER) and ADMIN
+    match /training/{docId} {
+      allow read, write: if hasAnyRole(['PLAYER', 'COACH', 'TEAM_MANAGER', 'SUPER_ADMIN', 'PLATFORM_ADMIN']);
+    }
+
+  }
+}
