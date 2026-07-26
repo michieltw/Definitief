@@ -6,16 +6,15 @@ on:
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./alpha-prototype
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Dependencies
+        working-directory: ./alpha-prototype
         run: npm install
 
       - name: Build App
+        working-directory: ./alpha-prototype
         run: npm run build
 
       - name: Deploy to Firebase
@@ -25,4 +24,3 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_CREDENTIALS }}'
           channelId: live
           projectId: blackout-hockey-mlm
-          entryPoint: ./alpha-prototype
