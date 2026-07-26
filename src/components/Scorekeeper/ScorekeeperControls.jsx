@@ -1,4 +1,4 @@
-import { CONFIG, getLabelByCode } from '../../lib/constants';
+import { CONFIG, getLabelByCode } from '../../../constants';
 
 export default function ScorekeeperControls({ teamName, teamId, recordEvent, isRecording, isHome }) {
   return (

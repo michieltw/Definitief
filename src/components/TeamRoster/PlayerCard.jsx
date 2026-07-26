@@ -1,4 +1,4 @@
-import { getLabelByCode } from '../../lib/constants';
+import { getLabelByCode } from '../../../constants';
 
 export default function PlayerCard({ player }) {
   return (

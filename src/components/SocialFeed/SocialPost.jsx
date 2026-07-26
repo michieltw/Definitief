@@ -1,5 +1,5 @@
 import { MessageCircle, Heart, Share2 } from 'lucide-react';
-import { getLabelByCode } from '../../lib/constants';
+import { getLabelByCode } from '../../../constants';
 
 export default function SocialPost({ post }) {
   return (
