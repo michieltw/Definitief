@@ -1,12 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Calendar, Clock, CheckCircle2, ChevronRight } from 'lucide-react';
-
-const INITIAL_MATCHES = [
-  { id: 'MCH_001', teamHome: 'TEAM_001', teamAway: 'TEAM_002', status: 'SCHEDULED', date: '2026-10-15T19:00:00Z' },
-  { id: 'MCH_002', teamHome: 'TEAM_003', teamAway: 'TEAM_004', status: 'SCHEDULED', date: '2026-10-16T20:00:00Z' },
-  { id: 'MCH_003', teamHome: 'TEAM_005', teamAway: 'TEAM_001', status: 'LIVE', date: '2026-10-14T19:00:00Z', score: '2 - 1' },
-  { id: 'MCH_004', teamHome: 'TEAM_002', teamAway: 'TEAM_006', status: 'CLOSED', date: '2026-10-10T18:00:00Z', score: '4 - 0' }
-];
+import { useFirestoreCollection } from '../../hooks/useFirestore';
+import DataMissingIndicator from '../DataMissingIndicator';
 
 const COLUMNS = [
   { id: 'SCHEDULED', title: 'Scheduled', icon: Calendar, color: 'text-slate-400' },
@@ -15,8 +10,28 @@ const COLUMNS = [
 ];
 
 export default function MatchKanban() {
-  const [matches, setMatches] = useState(INITIAL_MATCHES);
+  const { data: rawMatches, loading } = useFirestoreCollection('match');
+
+  const [matches, setMatches] = useState([]);
   const [draggedMatchId, setDraggedMatchId] = useState(null);
+
+  useEffect(() => {
+    if (rawMatches) {
+      // Filter out only the match info documents
+      const infoDocs = rawMatches.filter(m => m.id.endsWith(':info'));
+
+      // Map to expected format for kanban board
+      const formatted = infoDocs.map(m => ({
+        id: m.id.replace(':info', ''),
+        teamHome: m.homeTeam || 'TBD',
+        teamAway: m.awayTeam || 'TBD',
+        status: m.statusCode || 'SCHEDULED',
+        date: m.scheduledStartTime || new Date().toISOString(),
+        score: (m.scoreHome !== undefined && m.scoreAway !== undefined) ? `${m.scoreHome} - ${m.scoreAway}` : null
+      }));
+      setMatches(formatted);
+    }
+  }, [rawMatches]);
 
   const handleDragStart = (e, matchId) => {
     setDraggedMatchId(matchId);
@@ -39,6 +54,22 @@ export default function MatchKanban() {
 
     // In a real app, you would trigger a Firestore batch update here
   };
+
+  if (loading) {
+    return <div className="p-8 text-slate-400">Loading matches...</div>;
+  }
+
+  if (!rawMatches || matches.length === 0) {
+    return (
+      <div className="p-8 w-full max-w-4xl mx-auto">
+        <DataMissingIndicator
+          collectionPath="/match"
+          expectedDocId="*ANY*:info"
+          schemaInterface={`{ "statusCode": "SCHEDULED", "homeTeam": "TEAM_001", "awayTeam": "TEAM_002", "scheduledStartTime": "ISO-8601" }`}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-slate-900 rounded border border-slate-700 p-6 overflow-hidden">

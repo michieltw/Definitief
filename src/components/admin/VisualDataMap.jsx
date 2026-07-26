@@ -96,17 +96,13 @@ export default function VisualDataMap() {
             <div className="p-4 flex-1 overflow-auto">
               <p className="text-sm text-slate-400 mb-6">Select a document below to quick-edit its properties without leaving the map.</p>
 
-              {/* Dummy list for quick edit */}
-              <div className="space-y-2">
-                {[1, 2, 3].map(i => (
-                  <div key={i} className="bg-slate-700/50 border border-slate-600 rounded p-3">
-                    <div className="font-mono text-xs text-emerald-400 mb-1">{selectedNode.id}_00{i}</div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm">Example Entity {i}</span>
-                      <button className="text-xs bg-slate-600 hover:bg-emerald-600 px-2 py-1 rounded transition-colors">Edit</button>
-                    </div>
-                  </div>
-                ))}
+              <div className="p-4 border-2 border-dashed border-slate-700 rounded text-center">
+                <p className="text-slate-500 text-sm italic">
+                  Search query required to populate quick-edit list.
+                </p>
+                <p className="text-slate-600 text-xs mt-2">
+                  (Mock data previews disabled)
+                </p>
               </div>
             </div>
           </div>

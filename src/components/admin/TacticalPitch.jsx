@@ -1,18 +1,21 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Users, AlertCircle, Save } from 'lucide-react';
-
-const INITIAL_ROSTER = [
-  { id: 'PLR_001', name: 'J. Smith', number: 91, position: 'LW' },
-  { id: 'PLR_002', name: 'A. Matthews', number: 34, position: 'C' },
-  { id: 'PLR_003', name: 'M. Marner', number: 16, position: 'RW' },
-  { id: 'PLR_004', name: 'M. Rielly', number: 44, position: 'LD' },
-  { id: 'PLR_005', name: 'T. Brodie', number: 78, position: 'RD' },
-  { id: 'PLR_006', name: 'I. Samsonov', number: 35, position: 'G' },
-];
+import { useFirestoreDocument } from '../../hooks/useFirestore';
+import DataMissingIndicator from '../DataMissingIndicator';
 
 export default function TacticalPitch() {
-  const [benched, setBenched] = useState(INITIAL_ROSTER);
+  const { data: rosterDoc, loading } = useFirestoreDocument('match', 'MCH_2026_001:roster');
+
+  const [benched, setBenched] = useState([]);
   const [onIce, setOnIce] = useState([]);
+
+  useEffect(() => {
+    if (rosterDoc && rosterDoc.rosterHome) {
+      // In a real app we'd likely map the roster IDs to actual player profiles here.
+      // Since the rule is no mock data, we will map what is available in the doc.
+      setBenched(rosterDoc.rosterHome);
+    }
+  }, [rosterDoc]);
 
   // Basic drag and drop state
   const [draggedPlayer, setDraggedPlayer] = useState(null);
@@ -56,6 +59,22 @@ export default function TacticalPitch() {
     setDraggedPlayer(null);
   };
 
+  if (loading) {
+    return <div className="text-slate-400 p-8">Loading match roster...</div>;
+  }
+
+  if (!rosterDoc) {
+    return (
+      <div className="p-8 w-full max-w-3xl mx-auto">
+        <DataMissingIndicator
+          collectionPath="/match"
+          expectedDocId="MCH_2026_001:roster"
+          schemaInterface={`{ "homeTeamId": "TEAM_001", "rosterHome": [ { "playerId": "PLR_001", "jerseyNumber": 10, "positionCode": "C" } ] }`}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full gap-6">
       {/* Sidebar: Bench & Roster */}
@@ -83,10 +102,10 @@ export default function TacticalPitch() {
               className="bg-slate-700 p-3 rounded cursor-grab active:cursor-grabbing border border-slate-600 hover:border-emerald-500 flex justify-between items-center"
             >
               <div className="flex items-center gap-3">
-                <span className="w-6 h-6 bg-slate-900 text-slate-300 flex items-center justify-center rounded text-xs font-mono">{player.number}</span>
-                <span className="font-medium text-sm">{player.name}</span>
+                <span className="w-6 h-6 bg-slate-900 text-slate-300 flex items-center justify-center rounded text-xs font-mono">{player.jerseyNumber || '?'}</span>
+                <span className="font-medium text-sm">{player.playerId}</span>
               </div>
-              <span className="text-xs font-bold text-slate-400 w-6 text-center">{player.position}</span>
+              <span className="text-xs font-bold text-slate-400 w-6 text-center">{player.positionCode}</span>
             </div>
           ))}
         </div>
@@ -138,11 +157,11 @@ export default function TacticalPitch() {
               onDragStart={(e) => handleDragStart(e, player, 'ice')}
               className="absolute w-10 h-10 bg-slate-900 border-2 border-emerald-500 rounded-full flex items-center justify-center cursor-grab active:cursor-grabbing text-emerald-400 font-bold shadow-lg transform -translate-x-1/2 -translate-y-1/2 z-10 hover:scale-110 transition-transform"
               style={{ left: `${player.x}%`, top: `${player.y}%` }}
-              title={player.name}
+              title={player.playerId}
             >
-              {player.number}
+              {player.jerseyNumber || '?'}
               <div className="absolute -bottom-6 text-[10px] whitespace-nowrap bg-slate-900/80 px-1 rounded text-white">
-                {player.position}
+                {player.positionCode}
               </div>
             </div>
           ))}
