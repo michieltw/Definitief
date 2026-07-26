@@ -105,23 +105,13 @@ export default function BulkEditor() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[1, 2, 3, 4, 5].map((i) => (
-                    <tr key={i} className="border-b border-slate-700 hover:bg-slate-800/50">
-                      <td className="p-3"><input type="checkbox" className="accent-emerald-500" /></td>
-                      <td className="p-3 font-mono text-xs text-slate-400">PLR_00{i}</td>
-                      <td className="p-3">Player Name {i}</td>
-                      <td className="p-3">
-                        <span className="px-2 py-1 bg-slate-700 rounded text-xs">ACTIVE</span>
-                      </td>
-                      <td className="p-3">
-                        <select className="bg-slate-800 border border-slate-600 rounded p-1 text-sm w-full">
-                          <option>ACTIVE</option>
-                          <option>INJURED</option>
-                          <option>SUSPENDED</option>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
+                  <tr>
+                    <td colSpan="5" className="p-8 text-center text-slate-500 italic border-b border-slate-700">
+                      Select a collection to fetch data and begin batch editing operations.
+                      <br/>
+                      <span className="text-xs text-slate-600">(Mock preview data has been removed per zero-mock-data policy)</span>
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>

@@ -2,18 +2,34 @@ import { useState, useEffect } from 'react';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { Plus, Edit2, Trash2 } from 'lucide-react';
+import DataMissingIndicator from '../DataMissingIndicator';
 
 // Core Schema Definition matching Firebase_NoSQL_Datamodel_Hockey.md
 const CORE_COLLECTIONS = [
-  { id: 'team', name: 'Teams', icon: 'Shield' },
-  { id: 'user', name: 'Users', icon: 'User' },
-  { id: 'match', name: 'Matches', icon: 'Calendar' },
-  { id: 'person', name: 'Persons', icon: 'Users' }
+  { id: 'person', name: 'Persons' },
+  { id: 'user', name: 'Users' },
+  { id: 'player', name: 'Players' },
+  { id: 'organization', name: 'Organizations' },
+  { id: 'team', name: 'Teams' },
+  { id: 'location', name: 'Locations' },
+  { id: 'season', name: 'Seasons' },
+  { id: 'competition', name: 'Competitions' },
+  { id: 'match', name: 'Matches' },
+  { id: 'stand', name: 'Standings (O1)' },
+  { id: 'stats', name: 'Statistics (O1)' },
+  { id: 'social', name: 'Social Feeds' },
+  { id: 'chat', name: 'Chat Channels' },
+  { id: 'finance', name: 'Finances' },
+  { id: 'subscription', name: 'Subscriptions' },
+  { id: 'training', name: 'Trainings' },
+  { id: 'transfers', name: 'Transfers' },
+  { id: 'dfs', name: 'DFS Slates' },
+  { id: 'marketplace', name: 'Marketplace' }
 ];
 
 export default function CRUDManager() {
   const [activeCollection, setActiveCollection] = useState('team');
-  const [documents, setDocuments] = useState([]);
+  const [documents, setDocuments] = useState(null);
   const [loading, setLoading] = useState(false);
 
   // [Verified against GitHub: Firebase_NoSQL_Datamodel_Hockey.md -> Universal CRUD]
@@ -27,14 +43,10 @@ export default function CRUDManager() {
       querySnapshot.forEach((doc) => {
         docs.push({ id: doc.id, ...doc.data() });
       });
-      setDocuments(docs);
+      setDocuments(docs.length > 0 ? docs : null);
     } catch (error) {
       console.error('Error fetching documents:', error);
-      // Fallback for missing permissions/offline
-      setDocuments([
-        { id: `${colId}:1`, name: `Example ${colId} 1`, status: 'Active' },
-        { id: `${colId}:2`, name: `Example ${colId} 2`, status: 'Inactive' }
-      ]);
+      setDocuments(null);
     }
     setLoading(false);
   };
@@ -73,10 +85,12 @@ export default function CRUDManager() {
               <div key={i} className="h-16 bg-slate-800 rounded w-full"></div>
             ))}
           </div>
-        ) : documents.length === 0 ? (
-          <div className="text-center p-8 text-slate-400">
-            No documents found in {activeCollection}. (Note: Needs specific document ID matching for some collections like `team:[TEAM_ID]`)
-          </div>
+        ) : !documents ? (
+          <DataMissingIndicator
+            collectionPath={`/${activeCollection}`}
+            expectedDocId={`<ANY_VALID_DOC_ID>`}
+            schemaInterface={`Expected document format for ${activeCollection}`}
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
