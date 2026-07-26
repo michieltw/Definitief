@@ -30,8 +30,14 @@ export default function Layout() {
             <span>Social & Market</span>
           </Link>
         </nav>
+        <div className="p-4 border-t border-slate-700">
+          <Link to="/admin" className="flex items-center gap-3 p-2 rounded hover:bg-slate-700 text-emerald-400">
+            <Activity className="w-5 h-5" />
+            <span>Admin Panel</span>
+          </Link>
+        </div>
       </aside>
-      <main className="flex-1 overflow-auto p-6">
+      <main className="flex-1 overflow-auto p-0 md:p-6">
         <Outlet />
       </main>
     </div>

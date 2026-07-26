@@ -1,10 +1,11 @@
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
 import StandingsDashboard from './pages/StandingsDashboard';
 import TeamRoster from './pages/TeamRoster';
 import MatchScorekeeper from './pages/MatchScorekeeper';
 import MatchRSVP from './pages/MatchRSVP';
 import SocialFeed from './pages/SocialFeed';
+import AdminDashboard from './pages/admin/AdminDashboard';
 
 function App() {
   return (
@@ -16,6 +17,7 @@ function App() {
           <Route path="match/:matchId/scorekeeper" element={<MatchScorekeeper />} />
           <Route path="match/:matchId/rsvp" element={<MatchRSVP />} />
           <Route path="social" element={<SocialFeed />} />
+          <Route path="admin" element={<AdminDashboard />} />
         </Route>
       </Routes>
     </BrowserRouter>
