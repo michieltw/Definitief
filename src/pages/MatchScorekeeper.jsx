@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useFirestoreDocument } from '../hooks/useFirestore';
 import DataMissingIndicator from '../components/DataMissingIndicator';
-import { CONFIG, getLabelByCode } from '../lib/constants'; // Need to create this
+import { CONFIG, getLabelByCode } from '../../constants'; // Need to create this
 
 export default function MatchScorekeeper() {
   const { matchId } = useParams();

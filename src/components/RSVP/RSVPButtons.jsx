@@ -1,5 +1,5 @@
 import { CheckCircle, XCircle, HelpCircle } from 'lucide-react';
-import { CONFIG, getLabelByCode } from '../../lib/constants';
+import { CONFIG, getLabelByCode } from '../../../constants';
 
 export default function RSVPButtons({ currentUserResponse, handleRSVP }) {
   const attendingCode = CONFIG.RSVP_STATUS[0].code;
