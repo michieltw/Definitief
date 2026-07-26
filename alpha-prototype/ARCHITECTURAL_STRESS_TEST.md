@@ -17,12 +17,3 @@
 * **Mock Firestore Hook:** Implemented a custom `useFirestoreDocument` hook that leverages an in-memory `Map`. This simulates network latency and perfectly replicates the "Data Missing Indicator" behavior expected when a document isn't found.
 * **Manual Seeding:** Added `[Dev] Seed Data` buttons to the UI to inject data into the in-memory mock database, bypassing the need for a real Firebase backend or cloud functions for this frontend prototype.
 * **Missing Marketplace:** Skipped the marketplace component to focus entirely on the core flows (Standings, Roster, Scorekeeper, RSVP, Social).
-
-## 5. Alpha 3.0: Live Mutations & Real-time Updates Stress Test
-
-* **Real-time Re-renders:** Implementing the Pub/Sub system (`onSnapshot` simulation) in `useFirestore.js` revealed that local component state (like the `useReducer` in `MatchScorekeeper.jsx`) needs careful synchronization. Merging an external `events` array update with local optimistic updates (like unsubmitted score increments) is tricky. In our test, the simulation successfully appended events without wiping the UI, but it required relying on the reducer to maintain local state isolation.
-* **Standings Recalculation (O(1) limits):** Calculating standings when a match hits `FINAL` using a flat document (`stand:SZN:DIV`) was straightforward because we perform a full array overwrite (`updateDoc`). However, this introduces a race condition if multiple matches end simultaneously. Firestore handles this natively with transaction batches, but our `updateDoc` mock would suffer a "last-writer-wins" overwrite. Additionally, because the `stand` document must contain team names (to satisfy O(1) reads), the recalculation logic has to preserve those cached names during the points update.
-* **Lifecycle State Machine:** Separating the match into `SCHEDULED` (countdown/RSVP), `LIVE` (scorekeeper controls), and `FINAL` (locked/read-only) drastically improved the UX. By disabling the control buttons in the `FINAL` state, we prevent late optimistic UI updates from conflicting with the newly calculated standings.
-
-
-* **Player Stats Recalculation:** Because the prototype UI does not select individual players for events, I have mocked an update to a known player document (`stats:SZN_2026:TEAM_001:PLR_001`). In a real application, a Cloud Function would iterate through the match events and update the `PlayerStatsDocument` for all involved players securely.

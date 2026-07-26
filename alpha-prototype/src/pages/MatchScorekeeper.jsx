@@ -1,47 +1,8 @@
-import { useReducer, useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { useFirestoreDocument, simulateExternalUpdate } from '../hooks/useFirestore';
+import { useFirestoreDocument } from '../hooks/useFirestore';
 import DataMissingIndicator from '../components/DataMissingIndicator';
-import { CONFIG } from '../lib/constants';
-import ScoreboardHeader from '../components/Scorekeeper/ScoreboardHeader';
-import ScorekeeperControls from '../components/Scorekeeper/ScorekeeperControls';
-import EventLog from '../components/Scorekeeper/EventLog';
-
-// Reducer for match state
-const initialState = {
-  events: [],
-  scoreHome: 0,
-  scoreAway: 0,
-  isRecording: false,
-};
-
-function matchReducer(state, action) {
-  switch (action.type) {
-    case 'INIT_STATE':
-      return {
-        ...state,
-        events: action.payload.events || [],
-        scoreHome: action.payload.scoreHome || 0,
-        scoreAway: action.payload.scoreAway || 0,
-      };
-    case 'SET_RECORDING':
-      return { ...state, isRecording: action.payload };
-    case 'ADD_EVENT': {
-      const newEvent = action.payload;
-      const isGoal = newEvent.type === CONFIG.EVENT_TYPES.GOAL;
-      const isHome = newEvent.teamId === action.meta.homeTeam;
-
-      return {
-        ...state,
-        events: [...state.events, newEvent],
-        scoreHome: isGoal && isHome ? state.scoreHome + 1 : state.scoreHome,
-        scoreAway: isGoal && !isHome ? state.scoreAway + 1 : state.scoreAway,
-      };
-    }
-    default:
-      return state;
-  }
-}
+import { CONFIG, getLabelByCode } from '../lib/constants'; // Need to create this
 
 export default function MatchScorekeeper() {
   const { matchId } = useParams();
@@ -49,25 +10,10 @@ export default function MatchScorekeeper() {
   // Fetch Match Info (header)
   const { data: matchInfo, loading: infoLoading, updateDoc: updateMatchInfo, setDoc: setMatchInfo } = useFirestoreDocument('match', `${matchId}:info`);
 
-  // Fetch Match Events
+  // Fetch Match Events (append-only array ideally, but here we just mock the array in a single doc)
   const { data: matchEvents, loading: eventsLoading, updateDoc: updateMatchEvents, setDoc: setMatchEvents } = useFirestoreDocument('match', `${matchId}:events`);
 
-  const [simulationActive, setSimulationActive] = useState(false);
-
-  const [state, dispatch] = useReducer(matchReducer, initialState);
-
-  useEffect(() => {
-    if (matchInfo && matchEvents) {
-      dispatch({
-        type: 'INIT_STATE',
-        payload: {
-          events: matchEvents.events,
-          scoreHome: matchInfo.scoreHome,
-          scoreAway: matchInfo.scoreAway,
-        }
-      });
-    }
-  }, [matchInfo, matchEvents]);
+  const [isRecording, setIsRecording] = useState(false);
 
   const handleSeedData = async () => {
     await setMatchInfo({
@@ -79,102 +25,12 @@ export default function MatchScorekeeper() {
       scoreAway: 0,
       period: 1,
       time: '20:00',
-      status: CONFIG.MATCH_STATUS.SCHEDULED,
-      matchDate: new Date(Date.now() + 86400000).toISOString() // Tomorrow
+      status: 'LIVE'
     });
 
     await setMatchEvents({
       events: []
     });
-  };
-
-  const { data: standingsData, updateDoc: updateStandings } = useFirestoreDocument('stand', 'SZN_2026:DIV_001');
-
-  // Real-Time Stream Simulation
-  useEffect(() => {
-    let interval;
-    if (simulationActive && matchInfo && matchInfo.status === CONFIG.MATCH_STATUS.LIVE) {
-      interval = setInterval(() => {
-        // Simulate an external background event every 5 seconds (e.g., from another scorekeeper)
-        const isHomeEvent = Math.random() > 0.5;
-        const teamId = isHomeEvent ? matchInfo.homeTeam : matchInfo.awayTeam;
-        const newEvent = {
-          id: `SIM_EVT_${Date.now()}`,
-          type: CONFIG.EVENT_TYPES.PENALTY, // Simulating mostly non-goal events to avoid score sync complexity here
-          teamId: teamId,
-          timestamp: new Date().toISOString(),
-          period: matchInfo.period,
-          timeString: matchInfo.time,
-          note: 'External Sim Event'
-        };
-
-        // Use the external update helper to bypass the component's normal update flow,
-        // testing if onSnapshot pub/sub triggers a smooth re-render
-        simulateExternalUpdate('match', `${matchId}:events`, (currentData) => {
-          const currentEvents = currentData.events || [];
-          return { ...currentData, events: [...currentEvents, newEvent] };
-        });
-
-      }, 5000);
-    }
-    return () => clearInterval(interval);
-  }, [simulationActive, matchInfo, matchId]);
-
-  const handleStatusChange = async (newStatus) => {
-    await updateMatchInfo({ status: newStatus });
-
-    // Handle Standings Recalculation when Match is FINAL
-    if (newStatus === CONFIG.MATCH_STATUS.FINAL && standingsData && standingsData.teams) {
-      const homeScore = state.scoreHome;
-      const awayScore = state.scoreAway;
-
-      const updatedTeams = standingsData.teams.map(team => {
-        if (team.teamId === matchInfo.homeTeam) {
-          const isWin = homeScore > awayScore;
-          const isDraw = homeScore === awayScore;
-          return {
-            ...team,
-            played: team.played + 1,
-            points: team.points + (isWin ? 3 : isDraw ? 1 : 0),
-            goalsFor: team.goalsFor + homeScore,
-            goalsAgainst: team.goalsAgainst + awayScore,
-            form: team.form.slice(1) + (isWin ? 'W' : isDraw ? 'D' : 'L')
-          };
-        }
-        if (team.teamId === matchInfo.awayTeam) {
-          const isWin = awayScore > homeScore;
-          const isDraw = homeScore === awayScore;
-          return {
-            ...team,
-            played: team.played + 1,
-            points: team.points + (isWin ? 3 : isDraw ? 1 : 0),
-            goalsFor: team.goalsFor + awayScore,
-            goalsAgainst: team.goalsAgainst + homeScore,
-            form: team.form.slice(1) + (isWin ? 'W' : isDraw ? 'D' : 'L')
-          };
-        }
-        return team;
-      });
-
-      // Sort teams by points (simple sort for prototype)
-      updatedTeams.sort((a, b) => b.points - a.points);
-
-      await updateStandings({ teams: updatedTeams });
-
-      // Player stats update simulation - because we don't track player IDs in this UI yet,
-      // we mock a generic update to a known player document
-      try {
-        const dummyPlayerId = 'PLR_001';
-        const teamId = matchInfo.homeTeam;
-        const statsDocId = `SZN_2026:${teamId}:${dummyPlayerId}`;
-        // Using mockDB directly just to simulate the write without creating another useFirestoreDocument hook
-        const { mockDB } = await import('../hooks/useFirestore');
-        // This is a hacky way to access the mock for prototype purposes
-        // In reality, this would be a cloud function iterating over the roster
-      } catch (e) {
-          // Ignore for now
-      }
-    }
   };
 
   const loading = infoLoading || eventsLoading;
@@ -193,125 +49,140 @@ export default function MatchScorekeeper() {
     );
   }
 
-  const recordEvent = async (type, teamId) => {
-    dispatch({ type: 'SET_RECORDING', payload: true });
+  const recordEvent = async (type, team) => {
+    setIsRecording(true);
 
     const newEvent = {
       id: `EVT_${Date.now()}`,
       type: type,
-      teamId: teamId,
+      teamId: team,
       timestamp: new Date().toISOString(),
       period: matchInfo.period,
-      timeString: matchInfo.time
+      timeString: matchInfo.time // In real app, we'd need a running clock
     };
 
-    // Optimistic UI update via reducer
-    dispatch({
-      type: 'ADD_EVENT',
-      payload: newEvent,
-      meta: { homeTeam: matchInfo.homeTeam }
-    });
+    // Append event
+    const currentEvents = matchEvents.events || [];
+    await updateMatchEvents({ events: [...currentEvents, newEvent] });
 
-    // Determine new score based on state + current event
-    // Using current state isn't perfectly race-condition safe for network requests,
-    // but works for this prototype level mock.
-    const isGoal = type === CONFIG.EVENT_TYPES.GOAL;
-    const isHome = teamId === matchInfo.homeTeam;
+    // Update score if goal
+    if (type === 'GOAL') {
+      if (team === matchInfo.homeTeam) {
+        await updateMatchInfo({ scoreHome: matchInfo.scoreHome + 1 });
+      } else {
+        await updateMatchInfo({ scoreAway: matchInfo.scoreAway + 1 });
+      }
+    }
 
-    // Sync with backend (mock)
-    await Promise.all([
-      updateMatchEvents({ events: [...state.events, newEvent] }),
-      isGoal ? updateMatchInfo({
-        scoreHome: isHome ? state.scoreHome + 1 : state.scoreHome,
-        scoreAway: !isHome ? state.scoreAway + 1 : state.scoreAway,
-      }) : Promise.resolve()
-    ]);
-
-    dispatch({ type: 'SET_RECORDING', payload: false });
+    setIsRecording(false);
   };
-
-  // Combine matchInfo header info with reducer-managed scores for display
-  const displayMatchInfo = {
-    ...matchInfo,
-    scoreHome: state.scoreHome,
-    scoreAway: state.scoreAway
-  };
-
-  const isLive = matchInfo.status === CONFIG.MATCH_STATUS.LIVE;
-  const isFinal = matchInfo.status === CONFIG.MATCH_STATUS.FINAL;
-  const isScheduled = matchInfo.status === CONFIG.MATCH_STATUS.SCHEDULED;
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700">
-        <div className="text-sm font-semibold uppercase tracking-wider text-slate-400">Match Status: <span className="text-white">{matchInfo.status}</span></div>
-        <div className="flex items-center space-x-4">
-          {isLive && (
-            <label className="flex items-center space-x-2 text-sm text-slate-300">
-              <input
-                type="checkbox"
-                checked={simulationActive}
-                onChange={(e) => setSimulationActive(e.target.checked)}
-                className="rounded bg-slate-900 border-slate-600 text-emerald-500 focus:ring-emerald-500"
-              />
-              <span>Simulate External Events</span>
-            </label>
-          )}
-          <div className="space-x-2">
-            {isScheduled && (
-              <button onClick={() => handleStatusChange(CONFIG.MATCH_STATUS.LIVE)} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 rounded text-sm transition-colors">Start Match</button>
-            )}
-            {isLive && (
-              <button onClick={() => handleStatusChange(CONFIG.MATCH_STATUS.FINAL)} className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors">End Match</button>
-            )}
+      {/* Scoreboard Header */}
+      <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 shadow-xl flex items-center justify-between">
+        <div className="text-center w-1/3">
+          <div className="text-sm text-slate-400 uppercase tracking-widest mb-2">Home</div>
+          <div className="text-2xl font-bold">{matchInfo.homeName}</div>
+          <div className="text-6xl font-black mt-2 text-emerald-400">{matchInfo.scoreHome}</div>
+        </div>
+
+        <div className="text-center w-1/3 flex flex-col items-center">
+          <div className="bg-red-500/20 text-red-400 border border-red-500/50 px-3 py-1 rounded text-xs font-bold uppercase tracking-widest mb-4">
+            Live
+          </div>
+          <div className="text-slate-400 font-mono">Period {matchInfo.period}</div>
+          <div className="text-4xl font-mono font-bold my-2">{matchInfo.time}</div>
+        </div>
+
+        <div className="text-center w-1/3">
+          <div className="text-sm text-slate-400 uppercase tracking-widest mb-2">Away</div>
+          <div className="text-2xl font-bold">{matchInfo.awayName}</div>
+          <div className="text-6xl font-black mt-2 text-blue-400">{matchInfo.scoreAway}</div>
+        </div>
+      </div>
+
+      {/* Control Panel */}
+      <div className="grid grid-cols-2 gap-6">
+        {/* Home Controls */}
+        <div className="bg-slate-800 rounded p-6 border border-slate-700">
+          <h3 className="text-lg font-bold mb-4 border-b border-slate-700 pb-2">{matchInfo.homeName} Actions</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              disabled={isRecording}
+              onClick={() => recordEvent('GOAL', matchInfo.homeTeam)}
+              className="bg-emerald-600 hover:bg-emerald-500 py-3 rounded font-bold transition-colors disabled:opacity-50"
+            >
+              + GOAL
+            </button>
+            <button
+              disabled={isRecording}
+              onClick={() => recordEvent('SOG', matchInfo.homeTeam)}
+              className="bg-slate-700 hover:bg-slate-600 py-3 rounded font-bold transition-colors disabled:opacity-50"
+            >
+              Shot on Goal
+            </button>
+            <button
+              disabled={isRecording}
+              onClick={() => recordEvent('PENALTY', matchInfo.homeTeam)}
+              className="bg-red-900/50 hover:bg-red-800/50 text-red-200 border border-red-900 py-3 rounded font-bold transition-colors col-span-2 disabled:opacity-50"
+            >
+              Penalty
+            </button>
+          </div>
+        </div>
+
+        {/* Away Controls */}
+        <div className="bg-slate-800 rounded p-6 border border-slate-700">
+          <h3 className="text-lg font-bold mb-4 border-b border-slate-700 pb-2">{matchInfo.awayName} Actions</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              disabled={isRecording}
+              onClick={() => recordEvent('GOAL', matchInfo.awayTeam)}
+              className="bg-blue-600 hover:bg-blue-500 py-3 rounded font-bold transition-colors disabled:opacity-50"
+            >
+              + GOAL
+            </button>
+            <button
+              disabled={isRecording}
+              onClick={() => recordEvent('SOG', matchInfo.awayTeam)}
+              className="bg-slate-700 hover:bg-slate-600 py-3 rounded font-bold transition-colors disabled:opacity-50"
+            >
+              Shot on Goal
+            </button>
+             <button
+              disabled={isRecording}
+              onClick={() => recordEvent('PENALTY', matchInfo.awayTeam)}
+              className="bg-red-900/50 hover:bg-red-800/50 text-red-200 border border-red-900 py-3 rounded font-bold transition-colors col-span-2 disabled:opacity-50"
+            >
+              Penalty
+            </button>
           </div>
         </div>
       </div>
 
-      <ScoreboardHeader matchInfo={displayMatchInfo} />
-
-      {isScheduled && (
-        <div className="bg-slate-900 border border-slate-700 rounded-xl p-8 text-center shadow-xl">
-            <h2 className="text-2xl font-bold mb-4">Match Scheduled</h2>
-            <p className="text-slate-400 mb-6">Puck drops at {new Date(matchInfo.matchDate).toLocaleString()}</p>
-            <div className="text-4xl font-mono bg-slate-800 inline-block px-6 py-4 rounded-lg border border-slate-700 shadow-inner">
-               23:59:59 {/* Static countdown for prototype */}
+      {/* Event Feed */}
+      <div className="bg-white text-slate-900 rounded border border-slate-200 p-6 shadow-sm">
+        <h3 className="text-lg font-bold mb-4">Event Log</h3>
+        <div className="space-y-2 h-64 overflow-y-auto">
+          {[...(matchEvents.events || [])].reverse().map(evt => (
+            <div key={evt.id} className="flex items-center p-2 hover:bg-slate-50 border-b border-slate-100 last:border-0 text-sm">
+              <div className="w-16 font-mono text-slate-500">{evt.timeString}</div>
+              <div className="w-24">
+                <span className={`px-2 py-0.5 rounded text-xs font-bold ${evt.type === 'GOAL' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700'}`}>
+                  {evt.type}
+                </span>
+              </div>
+              <div className="flex-1">
+                {evt.teamId === matchInfo.homeTeam ? matchInfo.homeName : matchInfo.awayName}
+              </div>
             </div>
-            <div className="mt-8">
-               <a href={`/match/${matchId}/rsvp`} className="text-emerald-400 hover:text-emerald-300 underline">View RSVPs</a>
-            </div>
+          ))}
+          {(!matchEvents.events || matchEvents.events.length === 0) && (
+            <div className="text-slate-400 italic text-center py-8">No events recorded yet.</div>
+          )}
         </div>
-      )}
-
-      {(isLive || isFinal) && (
-        <>
-          <div className="grid grid-cols-2 gap-6">
-            <ScorekeeperControls
-              teamName={matchInfo.homeName}
-              teamId={matchInfo.homeTeam}
-              recordEvent={recordEvent}
-              isRecording={state.isRecording || isFinal}
-              isHome={true}
-              disabled={isFinal}
-            />
-            <ScorekeeperControls
-              teamName={matchInfo.awayName}
-              teamId={matchInfo.awayTeam}
-              recordEvent={recordEvent}
-              isRecording={state.isRecording || isFinal}
-              isHome={false}
-              disabled={isFinal}
-            />
-          </div>
-
-          <EventLog
-            events={state.events}
-            homeTeam={matchInfo.homeTeam}
-            homeName={matchInfo.homeName}
-            awayName={matchInfo.awayName}
-          />
-        </>
-      )}
+      </div>
     </div>
   );
 }
