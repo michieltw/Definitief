@@ -57,61 +57,9 @@ export function useFirestoreDocument(collectionPath, docId) {
               resolve(newData);
           }, 300);
       });
-  };
+  }
 
-  // Simulate atomic array operations
-  const arrayUnion = async (field, item) => {
-    setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const currentData = mockDB.get(key) || {};
-        const currentArray = currentData[field] || [];
-
-        // Ensure uniqueness (simple mock version)
-        const itemExists = currentArray.some(existing =>
-          JSON.stringify(existing) === JSON.stringify(item)
-        );
-
-        if (!itemExists) {
-            const updatedData = { ...currentData, [field]: [...currentArray, item] };
-            mockDB.set(key, updatedData);
-            setData(updatedData);
-            resolve(updatedData);
-        } else {
-            resolve(currentData);
-        }
-        setLoading(false);
-      }, 300);
-    });
-  };
-
-  const arrayRemove = async (field, itemPredicate) => {
-    setLoading(true);
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        const currentData = mockDB.get(key) || {};
-        const currentArray = currentData[field] || [];
-
-        // Remove items matching the predicate (e.g. { playerId: "123" })
-        // A real Firestore arrayRemove needs exact match, but mock predicate works for our prototype
-        const updatedArray = currentArray.filter(existing => {
-            let match = true;
-            for (let k in itemPredicate) {
-                if (existing[k] !== itemPredicate[k]) match = false;
-            }
-            return !match;
-        });
-
-        const updatedData = { ...currentData, [field]: updatedArray };
-        mockDB.set(key, updatedData);
-        setData(updatedData);
-        setLoading(false);
-        resolve(updatedData);
-      }, 300);
-    });
-  };
-
-  return { data, loading, error, updateDoc, setDoc, arrayUnion, arrayRemove };
+  return { data, loading, error, updateDoc, setDoc };
 }
 
 export function useFirestoreCollection(collectionPath) {
